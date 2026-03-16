@@ -114,17 +114,25 @@ elif menu == "3. 후보자 스크랩 및 전송":
                     status_text.text(f"[{i+1}/{len(st.session_state.target_urls)}] AI 데이터 분석 및 정제 중...")
                     
                     # Module 3: AI Refiner
-                    candidate_data = extract_candidate_info(raw_text)
+                    ai_result = extract_candidate_info(raw_text)
                     
-                    # If AI successfully found a candidate name
-                    if candidate_data and candidate_data.get("name") and candidate_data.get("name") not in ["Not Found", "Unknown"]:
-                        status_text.text(f"[{i+1}/{len(st.session_state.target_urls)}] 노션 DB로 전송 중: {candidate_data.get('name')}")
+                    # Normalize result to a list to handle both dict (1 person) and list (multiple people)
+                    candidates_list = []
+                    if isinstance(ai_result, dict):
+                        candidates_list = [ai_result]
+                    elif isinstance(ai_result, list):
+                        candidates_list = ai_result
                         
-                        # Module 4: Notion Sync
-                        is_success = create_notion_page(candidate_data)
-                        if is_success:
-                            success_count += 1
+                    # Process each candidate found
+                    for candidate_data in candidates_list:
+                        if isinstance(candidate_data, dict) and candidate_data.get("name") and candidate_data.get("name") not in ["Not Found", "Unknown"]:
+                            status_text.text(f"[{i+1}/{len(st.session_state.target_urls)}] 노션 DB로 전송 중: {candidate_data.get('name')}")
                             
+                            # Module 4: Notion Sync
+                            is_success = create_notion_page(candidate_data)
+                            if is_success:
+                                success_count += 1
+                                
                 # Update progress bar and add slight delay for API rate limits
                 progress_bar.progress((i + 1) / len(st.session_state.target_urls))
                 time.sleep(2) 
