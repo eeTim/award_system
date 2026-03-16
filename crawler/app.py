@@ -5,6 +5,8 @@ import logging
 
 logging.basicConfig(filename='system.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# 기존 코드: from ai_refiner import extract_candidate_info
+from ai_refiner import extract_candidate_info, extract_org_info
 from targeting_agent import extract_text_from_pdf, get_search_keywords_from_ai, search_target_urls
 from raw_scraper import scrape_raw_text
 from ai_refiner import extract_candidate_info
@@ -67,30 +69,42 @@ elif menu == "2. 1차: 타겟 기관 탐색":
 
         # Execution Logic
         if st.session_state.run_phase1 and len(st.session_state.target_orgs) == 0:
-            st.info("AI가 기관 정보를 분석하고 있습니다. 잠시만 기다려주세요...")
+            status_text = st.empty()
+            status_text.info("AI가 검색어를 도출하고 기관 URL을 수집하고 있습니다...")
+            
             search_queries = get_search_keywords_from_ai(st.session_state.theme_text)
             
             progress_bar = st.progress(0)
             temp_urls = set()
+            
+            # 1단계: URL 찾기 (진행도 0~30%)
             for i, query in enumerate(search_queries):
                 urls = search_target_urls(query)
                 temp_urls.update(urls)
-                progress_bar.progress((i + 1) / len(search_queries))
+                progress_bar.progress((i + 1) / len(search_queries) * 0.3)
                 time.sleep(1)
             
-            # Simulated parsing logic (We will update targeting_agent.py next to do this for real)
+            urls_list = list(temp_urls)[:10] # 테스트를 위해 최대 10개 기관만 파싱
             parsed_orgs = []
-            for url in list(temp_urls)[:5]: # Limit to 5 for fast UI testing
-                parsed_orgs.append({
-                    "기관명": "추출 대기중...", 
-                    "URL": url, 
-                    "시상 주제": "아프리카 기후변화", 
-                    "최초 시상 년도": "2020", 
-                    "후보자 수(추정)": "약 15명"
-                })
+            
+            # 2단계: 웹사이트 접속 및 AI 파싱 (진행도 30~100%)
+            status_text.info(f"총 {len(urls_list)}개의 기관 웹사이트에 접속하여 세부 정보를 파싱 중입니다. 잠시만 기다려주세요...")
+            
+            for i, url in enumerate(urls_list):
+                raw_text = scrape_raw_text(url) # 텍스트 긁어오기
                 
+                if raw_text and len(raw_text) > 100:
+                    org_data = extract_org_info(raw_text, url) # AI가 5가지 정보로 파싱
+                    parsed_orgs.append(org_data)
+                else:
+                    parsed_orgs.append({"기관명": "접속 불가 (보안 차단)", "URL": url, "시상 주제": "-", "최초 시상 년도": "-", "후보자 수(추정)": "-"})
+                    
+                progress_bar.progress(0.3 + ((i + 1) / len(urls_list)) * 0.7)
+                time.sleep(1)
+                
+            status_text.empty() # 파싱이 다 끝나면 로딩 텍스트를 지움
             st.session_state.target_orgs = parsed_orgs
-            st.rerun() # Refresh to show the table
+            st.rerun() # 모든 데이터가 준비된 후 화면을 새로고침하여 표를 띄움
 
         # Display Data
         if len(st.session_state.target_orgs) > 0:
