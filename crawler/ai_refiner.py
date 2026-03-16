@@ -61,3 +61,42 @@ if __name__ == "__main__":
     
     print("\n=== Extracted JSON Data ===")
     print(json.dumps(extracted_data, indent=2, ensure_ascii=False))
+
+def extract_org_info(raw_text, url):
+    """
+    Extracts organization info from raw text for Phase 1.
+    """
+    prompt = f"""
+    You are an expert data analyst. Read the following website text and extract information about the awarding organization or program.
+    Return ONLY a valid JSON object with the following exact keys. If specific information is missing, put "알 수 없음".
+
+    Keys to extract:
+    - "기관명": Name of the organization or award program.
+    - "URL": "{url}" (Keep this exact url).
+    - "시상 주제": Main theme, purpose, or category of the award (in Korean).
+    - "최초 시상 년도": The year the award was first given (e.g., "2020년").
+    - "후보자 수(추정)": Estimated number of candidates, finalists, or laureates mentioned (e.g., "약 15명", "매년 5명").
+
+    Raw Text:
+    {raw_text[:8000]}
+    """
+
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            )
+        )
+        return json.loads(response.text)
+        
+    except Exception as e:
+        print(f"Org AI extraction error: {e}")
+        return {
+            "기관명": "파싱 에러", 
+            "URL": url, 
+            "시상 주제": "파싱 실패", 
+            "최초 시상 년도": "-", 
+            "후보자 수(추정)": "-"
+        }
