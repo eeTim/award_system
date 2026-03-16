@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  # 1. Database container for storing raw candidate data and AI scores
+  postgres:
+    image: postgres:15-alpine
+    container_name: award_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: award_admin
+      POSTGRES_PASSWORD: award_password123!
+      POSTGRES_DB: award_data
+      TZ: Asia/Seoul
+    ports:
+      - "5433:5432"  # Routed to 5433 on host to avoid port conflicts and enhance security
+    volumes:
+      - ./pg_data:/var/lib/postgresql/data  # Persistent data storage for PostgreSQL
+    networks:
+      - award_net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # 2. Automation engine for web scraping, AI evaluation, and Notion integration
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    container_name: award_n8n
+    restart: unless-stopped
+    environment:
+      - GENERIC_TIMEZONE=Asia/Seoul
+      - TZ=Asia/Seoul
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_DATABASE=award_data
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_USER=award_admin
+      - DB_POSTGRESDB_PASSWORD=award_password123!
+      - N8N_SECURE_COOKIE=false
+    ports:
+      - "5678:5678"
+    volumes:
+      - ./n8n_data:/home/node/.n8n  # Persistent data storage for n8n workflows
+    depends_on:
+      - postgres
+    networks:
+      - award_net
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G
+
+# Isolated bridge network for security
+networks:
+  award_net:
+    driver: bridge
