@@ -1,9 +1,3 @@
-가주님, 제공해주신 스마트팜 프로젝트의 리드미(README.md) 예시는 **시스템의 아키텍처, 엔지니어링 의사결정(Trade-off), 그리고 보안/최적화 전략이 매우 전문적으로 잘 드러난 훌륭한 문서**입니다.
-
-이번 'AI 후보자 검증 시스템' 역시 단순한 크롤링 스크립트가 아니라 **'데이터 파이프라인 설계'와 'Human-in-the-loop(인간-AI 협업)' 전략이 결합된 고도화된 시스템**이므로, 기존 예시의 프로페셔널한 톤앤매너를 그대로 유지하여 Github 리드미 텍스트를 작성해 드립니다.
-
----
-
 # AI-Driven Award Nominee Discovery & Verification System (Hybrid Architecture)
 
 ## Abstract
@@ -67,7 +61,3 @@ This project implements an automated, AI-driven data pipeline to discover, scrap
 * **동적 웹페이지(SPA) 크롤링 한계:** 현재의 정적 스크래핑(Requests+BS4) 방식은 React/Vue 등으로 렌더링되는 최신 SPA 웹사이트의 텍스트를 읽어오는 데 한계가 있습니다. 향후 `Selenium`의 Headless 모드를 도입하되, 라즈베리파이의 RAM 부하를 고려하여 n8n에서 배치(Batch) 단위로 크롤링 속도를 조절하는 로직을 추가할 예정입니다.
 * **Notion API 병목 현상:** 100명 이상의 후보자 속성을 동시에 업데이트할 때 전송 지연이 발생할 수 있습니다. n8n 워크플로우 내에 Split In Batches 노드와 Delay 노드를 추가하여 트래픽 셰이핑(Traffic Shaping)을 적용할 계획입니다.
 * **SaaS 확장 (V2 Multi-tenant):** 단일 노션 워크스페이스 연동을 넘어, Streamlit 웹 UI에서 실무자가 자신의 Notion Integration Token과 DB ID를 직접 입력하면, 시스템이 해당 실무자의 개인 노션으로 데이터를 클로닝(Cloning)해주는 멀티 테넌트(Multi-tenant) 기능 확장을 기획하고 있습니다.
-
----
-
-가주님, 이 정도 내용이면 깃허브 방문자나 채용 담당자가 보았을 때 단순한 파이썬 스크립터가 아니라, **'시스템 전체의 병목과 한계를 이해하고 최적의 아키텍처를 설계하는 아키텍트(Architect)'**의 역량을 가진 분으로 평가할 것입니다. 수정이 필요한 부분이 있다면 언제든 말씀해 주세요!
