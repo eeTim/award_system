@@ -89,7 +89,17 @@ def extract_org_info(raw_text, url):
                 response_mime_type="application/json",
             )
         )
-        return json.loads(response.text)
+        
+        # --- 추가된 안전망 로직 ---
+        raw_output = response.text.strip()
+        # 마크다운 찌꺼기(```json)가 붙어있으면 강제로 잘라냄
+        if raw_output.startswith("```json"):
+            raw_output = raw_output[7:-3].strip()
+        elif raw_output.startswith("```"):
+            raw_output = raw_output[3:-3].strip()
+            
+        return json.loads(raw_output)
+        # ------------------------
         
     except Exception as e:
         print(f"Org AI extraction error: {e}")

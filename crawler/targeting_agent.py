@@ -1,3 +1,4 @@
+import urllib.parse
 import os
 import json
 import requests
@@ -121,3 +122,42 @@ if __name__ == "__main__":
             print(f"{i}. {url}")
     else:
         print("SERPER_API_KEY is not set. Skipping search.")
+
+def get_org_background_context(url):
+    """
+    Extracts the domain from a URL and searches Google via Serper API 
+    to gather background 'About Us' context for the organization.
+    """
+    try:
+        # 1. Extract domain (e.g., https://www.agnesafrica.org/fellowship -> agnesafrica.org)
+        domain = urllib.parse.urlparse(url).netloc
+        domain = domain.replace("www.", "")
+        
+        # 2. Create a targeted search query
+        search_query = f'"{domain}" about organization background OR wikipedia'
+        
+        api_key = os.getenv("SERPER_API_KEY")
+        if not api_key:
+            return ""
+            
+        url_serper = "https://google.serper.dev/search"
+        payload = json.dumps({"q": search_query, "num": 3}) # Get top 3 results
+        headers = {
+            'X-API-KEY': api_key,
+            'Content-Type': 'application/json'
+        }
+        
+        # 3. Request search and compile snippets
+        response = requests.post(url_serper, headers=headers, data=payload, timeout=10)
+        response.raise_for_status()
+        
+        results = response.json().get('organic', [])
+        context = ""
+        for res in results:
+            context += f"Title: {res.get('title')}\nSnippet: {res.get('snippet')}\n\n"
+            
+        return context
+        
+    except Exception as e:
+        print(f"Background search error for {url}: {e}")
+        return ""

@@ -7,7 +7,7 @@ logging.basicConfig(filename='system.log', level=logging.INFO, format='%(asctime
 
 # 기존 코드: from ai_refiner import extract_candidate_info
 from ai_refiner import extract_candidate_info, extract_org_info
-from targeting_agent import extract_text_from_pdf, get_search_keywords_from_ai, search_target_urls
+from targeting_agent import extract_text_from_pdf, get_search_keywords_from_ai, search_target_urls, get_org_background_context
 from raw_scraper import scrape_raw_text
 from ai_refiner import extract_candidate_info
 from notion_sync import create_notion_page
@@ -87,20 +87,28 @@ elif menu == "2. 1차: 타겟 기관 탐색":
             urls_list = list(temp_urls)[:10] # 테스트를 위해 최대 10개 기관만 파싱
             parsed_orgs = []
             
-            # 2단계: 웹사이트 접속 및 AI 파싱 (진행도 30~100%)
-            status_text.info(f"총 {len(urls_list)}개의 기관 웹사이트에 접속하여 세부 정보를 파싱 중입니다. 잠시만 기다려주세요...")
+            # 2단계: 웹사이트 접속 및 구글 교차 검색 (진행도 30~100%)
+            status_text.info(f"총 {len(urls_list)}개의 기관 웹사이트 접속 및 구글 배경지식 교차 검색을 진행 중입니다...")
             
             for i, url in enumerate(urls_list):
-                raw_text = scrape_raw_text(url) # 텍스트 긁어오기
+                # 1. 기존 웹사이트 긁어오기
+                raw_text = scrape_raw_text(url) 
                 
-                if raw_text and len(raw_text) > 100:
-                    org_data = extract_org_info(raw_text, url) # AI가 5가지 정보로 파싱
+                # 2. (추가된 핵심 무기) 구글 배경지식 검색해오기
+                background_context = get_org_background_context(url)
+                
+                # 3. 두 텍스트를 강력하게 결합
+                combined_text = f"--- [Website Raw Text] ---\n{raw_text}\n\n--- [Google Background Search Context] ---\n{background_context}"
+                
+                # 결합된 텍스트가 의미 있는 길이라면 AI 파싱 시작
+                if len(combined_text) > 150:
+                    org_data = extract_org_info(combined_text, url)
                     parsed_orgs.append(org_data)
                 else:
-                    parsed_orgs.append({"기관명": "접속 불가 (보안 차단)", "URL": url, "시상 주제": "-", "최초 시상 년도": "-", "후보자 수(추정)": "-"})
+                    parsed_orgs.append({"기관명": "정보 부족 (보안 차단)", "URL": url, "시상 주제": "-", "최초 시상 년도": "-", "후보자 수(추정)": "-"})
                     
                 progress_bar.progress(0.3 + ((i + 1) / len(urls_list)) * 0.7)
-                time.sleep(1)
+                time.sleep(1) # API Limit 방지
                 
             status_text.empty() # 파싱이 다 끝나면 로딩 텍스트를 지움
             st.session_state.target_orgs = parsed_orgs
