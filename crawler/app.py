@@ -3,223 +3,233 @@ import pandas as pd
 import time
 import logging
 
-logging.basicConfig(filename='system.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# 기존 코드: from ai_refiner import extract_candidate_info
-from ai_refiner import extract_candidate_info, extract_org_info
-from targeting_agent import extract_text_from_pdf, get_search_keywords_from_ai, search_target_urls, get_org_background_context
+# --- 🚀 [엔진 모듈 임포트] 우리가 만든 3대장 파일 연결 ---
+from targeting_agent import (
+    extract_text_from_pdf, 
+    get_search_keywords_from_ai, 
+    search_target_urls, 
+    search_award_background, 
+    search_award_winners
+)
 from raw_scraper import scrape_raw_text
-from ai_refiner import extract_candidate_info
-from notion_sync import create_notion_page
+from ai_refiner import (
+    extract_initial_award_name, 
+    verify_and_extract_org_info, 
+    extract_candidate_info
+)
+
+logging.basicConfig(filename='system.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 st.set_page_config(page_title="후보자 검증 AI 시스템", layout="wide")
 
-# --- Session State Initialization ---
+# ==========================================
+# 1. 초기 데이터 및 Session State 세팅
+# ==========================================
+
+SUB1_KEYWORDS = [
+    "award", "prize", "fellowship", "foundation", "program", "initiative", 
+    "organization", "annual award", "international award", "global award"
+]
+
+SUB2_KEYWORDS = [
+    "global", "africa", "asia", "europe", "korea", "kenya", "south africa", 
+    "ngo", "nonprofit", "youth", "women", "environment", "climate"
+]
+
 if 'theme_text' not in st.session_state: st.session_state.theme_text = ""
-if 'target_orgs' not in st.session_state: st.session_state.target_orgs = [] # Updated to hold dicts, not just URLs
-if 'basic_candidates' not in st.session_state: st.session_state.basic_candidates = []
 
-# Button States
-if 'run_phase1' not in st.session_state: st.session_state.run_phase1 = False
-if 'run_phase2' not in st.session_state: st.session_state.run_phase2 = False
-if 'run_phase3' not in st.session_state: st.session_state.run_phase3 = False
+if 'df_main_kw' not in st.session_state: st.session_state.df_main_kw = pd.DataFrame(columns=["선택", "주제 키워드"])
+if 'df_sub1_kw' not in st.session_state: st.session_state.df_sub1_kw = pd.DataFrame({"선택": [True]*len(SUB1_KEYWORDS), "서브 키워드 1": SUB1_KEYWORDS})
+if 'df_sub2_kw' not in st.session_state: st.session_state.df_sub2_kw = pd.DataFrame({"선택": [False]*len(SUB2_KEYWORDS), "서브 키워드 2": SUB2_KEYWORDS})
+if 'df_combined' not in st.session_state: st.session_state.df_combined = pd.DataFrame(columns=["선택", "검색어"])
+if 'df_urls' not in st.session_state: st.session_state.df_urls = pd.DataFrame(columns=["선택", "시상명", "URL"])
 
+if 'step1_done' not in st.session_state: st.session_state.step1_done = False
+if 'step2_done' not in st.session_state: st.session_state.step2_done = False
+if 'step3_done' not in st.session_state: st.session_state.step3_done = False
+
+# ==========================================
+# 2. 사이드바 메뉴 
+# ==========================================
 st.sidebar.title("시스템 컨트롤 패널")
 menu = st.sidebar.radio(
-    "메뉴를 선택하세요:",
-    ("1. 시상 주제 업로드", "2. 1차: 타겟 기관 탐색", "3. 2차: 후보자 기초 스크랩", "4. 3차: 심층 검증 및 노션 전송", "5. 시스템 디버깅")
+    "진행 단계를 선택하세요:",
+    ("Step 1. 시상 주제 분석", "Step 2. 검색어 최종 조합", "Step 3. URL 수집 및 1차 검역", "Step 4. 심층 스크랩 및 검증", "Step 5. 시스템 디버깅")
 )
 
-# --- TAB 1 ---
-if menu == "1. 시상 주제 업로드":
-    st.header("올해의 시상 테마 업로드")
-    uploaded_file = st.file_uploader("심사 기준이 담긴 PDF 문서를 업로드해 주세요.", type="pdf")
+# ==========================================
+# 3. 메인 화면 로직
+# ==========================================
+
+# --- STEP 1 ---
+if menu == "Step 1. 시상 주제 분석":
+    st.header("Step 1. 시상 주제 분석 및 키워드 셋업")
+    
+    uploaded_file = st.file_uploader("심사 기준 PDF 문서를 업로드해 주세요.", type="pdf")
     if uploaded_file is not None:
-        with st.spinner("PDF 텍스트를 추출하는 중입니다..."):
+        with st.spinner("PDF 텍스트 추출 중..."):
             with open("temp_theme.pdf", "wb") as f: f.write(uploaded_file.getbuffer())
-            extracted_text = extract_text_from_pdf("temp_theme.pdf")
-            if extracted_text:
-                st.session_state.theme_text = extracted_text
-                st.success("파일 업로드 및 분석 성공!")
-                with st.expander("추출된 텍스트 미리보기"): st.write(extracted_text[:500] + "...")
+            st.session_state.theme_text = extract_text_from_pdf("temp_theme.pdf")
+            st.success("PDF 업로드 성공!")
 
-# --- TAB 2 ---
-elif menu == "2. 1차: 타겟 기관 탐색":
-    st.header("1차: AI 타겟 기관 탐색")
-    st.write("AI가 대상 웹사이트를 찾고, 해당 기관의 핵심 정보를 파싱(Parsing)하여 리스트업합니다.")
-    
-    if not st.session_state.theme_text:
-        st.warning("먼저 '1. 시상 주제 업로드' 탭에서 PDF 파일을 업로드해 주세요.")
-        if st.button("샘플 텍스트로 강제 진행하기"):
-            st.session_state.theme_text = "Climate Change Response and Inequality Resolution in Africa."
-            st.rerun()
+    st.divider()
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🚀 AI 주제 키워드 추출", disabled=st.session_state.step1_done, use_container_width=True):
+            if not st.session_state.theme_text:
+                st.warning("PDF를 먼저 업로드 해주세요!")
+            else:
+                with st.spinner("AI가 핵심 주제를 분석 중입니다..."):
+                    st.session_state.step1_done = True
+                    # 진짜 AI 엔진 가동!
+                    main_kw_list = get_search_keywords_from_ai(st.session_state.theme_text)
+                    st.session_state.df_main_kw = pd.DataFrame({"선택": [True]*len(main_kw_list), "주제 키워드": main_kw_list})
+                    st.rerun()
+            
+    with col2:
+        if st.session_state.step1_done:
+            if st.button("취소 및 초기화", use_container_width=False):
+                st.session_state.step1_done = False
+                st.session_state.df_main_kw = pd.DataFrame(columns=["선택", "주제 키워드"])
+                st.rerun()
+
+    if st.session_state.step1_done:
+        c1, c2, c3 = st.columns(3)
+        with c1: st.session_state.df_main_kw = st.data_editor(st.session_state.df_main_kw, hide_index=True)
+        with c2: st.session_state.df_sub1_kw = st.data_editor(st.session_state.df_sub1_kw, hide_index=True)
+        with c3: st.session_state.df_sub2_kw = st.data_editor(st.session_state.df_sub2_kw, hide_index=True)
+
+# --- STEP 2 ---
+elif menu == "Step 2. 검색어 최종 조합":
+    st.header("Step 2. 검색어 최종 조합")
+    if not st.session_state.step1_done:
+        st.warning("Step 1을 먼저 완료해 주세요.")
     else:
-        # Button UI Logic (Start / Reset)
         col1, col2 = st.columns([1, 4])
         with col1:
-            if st.button("기관 탐색 시작", disabled=st.session_state.run_phase1, use_container_width=True):
-                st.session_state.run_phase1 = True
+            if st.button("조합 생성", disabled=st.session_state.step2_done, use_container_width=True):
+                st.session_state.step2_done = True
+                main_kws = st.session_state.df_main_kw[st.session_state.df_main_kw["선택"]]["주제 키워드"].tolist()
+                sub1_kws = st.session_state.df_sub1_kw[st.session_state.df_sub1_kw["선택"]]["서브 키워드 1"].tolist()
+                sub2_kws = st.session_state.df_sub2_kw[st.session_state.df_sub2_kw["선택"]]["서브 키워드 2"].tolist()
+                
+                combined_list = []
+                for m in main_kws:
+                    for s1 in sub1_kws: combined_list.append(f"{m} {s1}")
+                for s2 in sub2_kws:
+                    for m in main_kws:
+                        for s1 in sub1_kws: combined_list.append(f"{s2} {m} {s1}")
+                
+                st.session_state.df_combined = pd.DataFrame({"선택": [True]*len(combined_list), "검색어": combined_list})
                 st.rerun()
         with col2:
-            if st.session_state.run_phase1 or len(st.session_state.target_orgs) > 0:
-                if st.button("취소 및 초기화", use_container_width=False):
-                    st.session_state.run_phase1 = False
-                    st.session_state.target_orgs = []
+            if st.session_state.step2_done:
+                if st.button("초기화", use_container_width=False):
+                    st.session_state.step2_done = False
                     st.rerun()
 
-        # Execution Logic
-        if st.session_state.run_phase1 and len(st.session_state.target_orgs) == 0:
-            status_text = st.empty()
-            status_text.info("AI가 검색어를 도출하고 기관 URL을 수집하고 있습니다...")
-            
-            search_queries = get_search_keywords_from_ai(st.session_state.theme_text)
-            
-            progress_bar = st.progress(0)
-            temp_urls = set()
-            
-            # 1단계: URL 찾기 (진행도 0~30%)
-            for i, query in enumerate(search_queries):
-                urls = search_target_urls(query)
-                temp_urls.update(urls)
-                progress_bar.progress((i + 1) / len(search_queries) * 0.3)
-                time.sleep(1)
-            
-            urls_list = list(temp_urls)[:10] # 테스트를 위해 최대 10개 기관만 파싱
-            parsed_orgs = []
-            
-            # 2단계: 웹사이트 접속 및 구글 교차 검색 (진행도 30~100%)
-            status_text.info(f"총 {len(urls_list)}개의 기관 웹사이트 접속 및 구글 배경지식 교차 검색을 진행 중입니다...")
-            
-            for i, url in enumerate(urls_list):
-                # 1. 기존 웹사이트 긁어오기
-                raw_text = scrape_raw_text(url) 
+        if st.session_state.step2_done:
+            st.info(f"총 {len(st.session_state.df_combined)}개의 검색어가 생성되었습니다.")
+            st.session_state.df_combined = st.data_editor(st.session_state.df_combined, hide_index=False, use_container_width=True)
+
+# --- STEP 3 ---
+elif menu == "Step 3. URL 수집 및 1차 검역":
+    st.header("Step 3. URL 수집 및 1차 검역 (시상명 발췌)")
+    if not st.session_state.step2_done:
+        st.warning("Step 2를 먼저 완료해 주세요.")
+    else:
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            if st.button("🚀 원문 스크랩 및 1차 추출", disabled=st.session_state.step3_done, use_container_width=True):
+                st.session_state.step3_done = True
+                active_queries = st.session_state.df_combined[st.session_state.df_combined["선택"]]["검색어"].tolist()
                 
-                # 2. (추가된 핵심 무기) 구글 배경지식 검색해오기
-                background_context = get_org_background_context(url)
+                # 🚨 엔진 보호: 테스트를 위해 상위 3개 검색어만 실행 (모두 돌리면 30분 넘게 걸릴 수 있음)
+                test_queries = active_queries[:3] 
+                st.info(f"API 제한 방지를 위해 활성화된 검색어 중 상위 {len(test_queries)}개만 시범 타격합니다.")
                 
-                # 3. 두 텍스트를 강력하게 결합
-                combined_text = f"--- [Website Raw Text] ---\n{raw_text}\n\n--- [Google Background Search Context] ---\n{background_context}"
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                results_list = []
                 
-                # 결합된 텍스트가 의미 있는 길이라면 AI 파싱 시작
-                if len(combined_text) > 150:
-                    org_data = extract_org_info(combined_text, url)
-                    parsed_orgs.append(org_data)
-                else:
-                    parsed_orgs.append({"기관명": "정보 부족 (보안 차단)", "URL": url, "시상 주제": "-", "최초 시상 년도": "-", "후보자 수(추정)": "-"})
+                for i, query in enumerate(test_queries):
+                    status_text.text(f"[{i+1}/{len(test_queries)}] 구글 검색 중: {query}")
+                    urls_data = search_target_urls(query)
                     
-                progress_bar.progress(0.3 + ((i + 1) / len(urls_list)) * 0.7)
-                time.sleep(1) # API Limit 방지
-                
-            status_text.empty() # 파싱이 다 끝나면 로딩 텍스트를 지움
-            st.session_state.target_orgs = parsed_orgs
-            st.rerun() # 모든 데이터가 준비된 후 화면을 새로고침하여 표를 띄움
-
-        # Display Data
-        if len(st.session_state.target_orgs) > 0:
-            st.success(f"총 {len(st.session_state.target_orgs)}개의 타겟 기관 정보가 성공적으로 파싱되었습니다.")
-            df_orgs = pd.DataFrame(st.session_state.target_orgs)
-            st.dataframe(df_orgs, use_container_width=True)
-
-# --- TAB 3 ---
-elif menu == "3. 2차: 후보자 기초 스크랩":
-    st.header("2차: 후보자 기초 스크랩 (리스트업)")
-    
-    if not st.session_state.target_orgs:
-        st.warning("먼저 '2. 1차: 타겟 기관 탐색' 탭을 완료해 주세요.")
-    else:
-        st.info(f"파싱 완료된 기관 수: {len(st.session_state.target_orgs)}개")
-        
-        # Button UI Logic
-        col1, col2 = st.columns([1, 4])
-        with col1:
-            if st.button("기초 정보 스크랩 시작", disabled=st.session_state.run_phase2, use_container_width=True):
-                st.session_state.run_phase2 = True
-                st.rerun()
-        with col2:
-            if st.session_state.run_phase2 or len(st.session_state.basic_candidates) > 0:
-                if st.button("취소 및 리스트 초기화", use_container_width=False):
-                    st.session_state.run_phase2 = False
-                    st.session_state.basic_candidates = []
-                    st.rerun()
-
-        # Execution Logic
-        if st.session_state.run_phase2 and len(st.session_state.basic_candidates) == 0:
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            temp_candidates = []
-            
-            urls_to_scrape = [org["URL"] for org in st.session_state.target_orgs]
-            
-            for i, url in enumerate(urls_to_scrape):
-                status_text.text(f"[{i+1}/{len(urls_to_scrape)}] 수집 중: {url}")
-                raw_text = scrape_raw_text(url)
-                if raw_text and len(raw_text) > 100:
-                    ai_result = extract_candidate_info(raw_text)
-                    if isinstance(ai_result, dict): temp_candidates.append(ai_result)
-                    elif isinstance(ai_result, list): temp_candidates.extend(ai_result)
+                    for u_data in urls_data:
+                        url = u_data['link']
+                        status_text.text(f"원문 스크랩 중: {url[:50]}...")
+                        raw_text = scrape_raw_text(url)
                         
-                progress_bar.progress((i + 1) / len(urls_to_scrape))
-                time.sleep(1)
+                        if raw_text:
+                            award_name = extract_initial_award_name(raw_text)
+                            if award_name and "관련 없음" not in award_name:
+                                results_list.append({"선택": True, "시상명": award_name, "URL": url})
+                    progress_bar.progress((i + 1) / len(test_queries))
                 
-            st.session_state.basic_candidates = [c for c in temp_candidates if isinstance(c, dict) and c.get("name")]
-            st.rerun()
-
-        # Display Data
-        if len(st.session_state.basic_candidates) > 0:
-            st.success(f"총 {len(st.session_state.basic_candidates)}명의 후보자가 임시 수집되었습니다.")
-            df_candidates = pd.DataFrame(st.session_state.basic_candidates)
-            st.dataframe(df_candidates, use_container_width=True)
-
-# --- TAB 4 ---
-elif menu == "4. 3차: 심층 검증 및 노션 전송":
-    st.header("3차: 심층 검증 및 노션 전송")
-    
-    if not st.session_state.basic_candidates:
-        st.warning("먼저 '3. 2차: 후보자 기초 스크랩' 탭에서 인물 리스트를 추출해 주세요.")
-    else:
-        st.info(f"심층 검증 대기 중인 후보자: {len(st.session_state.basic_candidates)}명")
-        
-        st.subheader("심층 검증 옵션 선택")
-        col1, col2, col3 = st.columns(3)
-        with col1: opt_news = st.checkbox("최근 언론 보도 (News)", value=True)
-        with col2: opt_factcheck = st.checkbox("AI 팩트체크 (Fact Check)", value=True)
-        with col3: opt_awards = st.checkbox("과거 수상 이력 (Past Awards)", value=False)
-            
-        # Button UI Logic
-        col_btn1, col_btn2 = st.columns([1, 4])
-        with col_btn1:
-            if st.button("심층 검증 및 전송 시작", disabled=st.session_state.run_phase3, use_container_width=True):
-                st.session_state.run_phase3 = True
+                st.session_state.df_urls = pd.DataFrame(results_list)
+                status_text.empty()
                 st.rerun()
-        with col_btn2:
-            if st.session_state.run_phase3:
-                if st.button("상태 초기화"):
-                    st.session_state.run_phase3 = False
-                    st.rerun()
-                    
-        # Execution Logic
-        if st.session_state.run_phase3:
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            success_count = 0
-            
-            for i, candidate in enumerate(st.session_state.basic_candidates):
-                name = candidate.get("name")
-                status_text.text(f"[{i+1}/{len(st.session_state.basic_candidates)}] 심층 검증 및 전송 중: {name}")
-                time.sleep(1) # Deep search logic placeholder
-                is_success = create_notion_page(candidate)
-                if is_success: success_count += 1
-                progress_bar.progress((i + 1) / len(st.session_state.basic_candidates))
                 
-            st.success(f"총 {success_count}명의 후보자 데이터가 노션에 업데이트되었습니다.")
-            st.session_state.run_phase3 = False # Reset after completion
+        with col2:
+            if st.session_state.step3_done:
+                if st.button("결과 취소", use_container_width=False):
+                    st.session_state.step3_done = False
+                    st.session_state.df_urls = pd.DataFrame(columns=["선택", "시상명", "URL"])
+                    st.rerun()
 
-# --- TAB 5 ---
-elif menu == "5. 시스템 디버깅":
+        if st.session_state.step3_done:
+            st.success("블랙리스트를 통과한 원문에서 정확한 시상명을 발췌했습니다.")
+            st.session_state.df_urls = st.data_editor(st.session_state.df_urls, hide_index=False, use_container_width=True)
+
+# --- STEP 4 ---
+elif menu == "Step 4. 심층 스크랩 및 검증":
+    st.header("Step 4. 심층 팩트체크 및 수상자 발굴")
+    if not st.session_state.step3_done:
+        st.warning("Step 3를 먼저 완료해 주세요.")
+    else:
+        final_targets = st.session_state.df_urls[st.session_state.df_urls["선택"]]
+        st.info(f"현재 대기 중인 타겟 수: {len(final_targets)}개")
+        
+        if st.button("🚀 최종 교차 검증 및 인물 발굴 시작", type="primary"):
+            st.divider()
+            
+            for idx, row in final_targets.iterrows():
+                award_name = row['시상명']
+                orig_url = row['URL']
+                
+                with st.expander(f"🔍 [타겟 분석 중] {award_name}", expanded=True):
+                    # 1. 기관 정보 교차 검증 (OSINT)
+                    st.write("1. 구글 딥서치로 배경지식 교차 검증 중...")
+                    bg_context = search_award_background(award_name)
+                    orig_text = scrape_raw_text(orig_url)
+                    
+                    org_info = verify_and_extract_org_info(orig_text, bg_context, orig_url)
+                    st.json(org_info)
+                    
+                    # 2. 수상자/후보자 탐색 (OSINT)
+                    st.write("2. 구글 뉴스/발표문 기반 수상자 명단 탐색 중...")
+                    winner_urls = search_award_winners(award_name)
+                    all_candidates = []
+                    
+                    for w_data in winner_urls:
+                        w_text = scrape_raw_text(w_data['link'])
+                        if w_text:
+                            cands = extract_candidate_info(w_text)
+                            all_candidates.extend(cands)
+                    
+                    if all_candidates:
+                        st.success(f"총 {len(all_candidates)}명의 후보자/수상자 발견!")
+                        st.dataframe(pd.DataFrame(all_candidates))
+                    else:
+                        st.warning("발견된 후보자가 없습니다.")
+
+# --- STEP 5 ---
+elif menu == "Step 5. 시스템 디버깅":
     st.header("시스템 디버깅 및 실시간 로그")
     if st.button("로그 새로고침"): st.rerun()
     try:
         with open('system.log', 'r') as f:
-            st.text_area("Log Output", f.read()[-2000:], height=400)
+            st.text_area("Log Output", f.read()[-3000:], height=400)
     except FileNotFoundError:
         st.info("system.log 파일이 아직 생성되지 않았습니다.")
