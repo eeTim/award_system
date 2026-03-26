@@ -6,7 +6,7 @@ import urllib3
 from dotenv import load_dotenv
 
 # 1. 환경변수 로드 및 시스템 세팅
-load_dotenv() # .env 금고에서 API 키를 불러와 시스템 전역에 적용
+load_dotenv()
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(filename='system.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -20,7 +20,12 @@ st.set_page_config(page_title="후보자 검증 AI 시스템", layout="wide")
 # ==========================================
 # 3. Session State (전역 메모리) 초기화
 # ==========================================
-SUB1_KEYWORDS = ["award", "prize", "fellowship", "foundation", "program", "initiative", "organization", "annual award", "international award", "global award"]
+# 💡 수정됨: 공식 홈페이지 타겟팅을 위한 서브 키워드(website, homepage 등) 대거 추가
+SUB1_KEYWORDS = [
+    "award", "prize", "fellowship", "foundation", "program", "initiative", "organization", 
+    "annual award", "international award", "global award", 
+    "website", "homepage", "official website", "official homepage"
+]
 SUB2_KEYWORDS = ["global", "africa", "asia", "europe", "korea", "kenya", "south africa", "ngo", "nonprofit", "youth", "women", "environment", "climate"]
 
 if 'theme_text' not in st.session_state: st.session_state.theme_text = ""
@@ -69,7 +74,10 @@ if menu == "Step 1. 시상 주제 분석":
             st.success("PDF 업로드 성공!")
 
     st.divider()
-    col1, col2 = st.columns([1, 4])
+    
+    # 🚨 여기에 [🛠️ 테스트 키워드 주입] 버튼이 위치해야 합니다!
+    col1, col2, col3 = st.columns([2, 2, 1]) 
+    
     with col1:
         if st.button("🚀 AI 주제 키워드 추출", disabled=st.session_state.step1_done, use_container_width=True):
             if not st.session_state.theme_text:
@@ -79,16 +87,25 @@ if menu == "Step 1. 시상 주제 분석":
                     st.session_state.step1_done = True
                     main_kw_list = get_search_keywords_from_ai(st.session_state.theme_text)
                     
-                    # 🚨 AI API 에러 대비 안전망 (Fallback)
                     if not main_kw_list:
                         st.error("⚠️ 구글 API 할당량 초과! 테스트용 임시 키워드를 삽입합니다.")
-                        main_kw_list = ["climate change", "grassroots innovation", "environmental activism", "sustainable agriculture", "community resilience"]
+                        main_kw_list = ["climate change", "grassroots innovation", "environmental activism"]
                         
                     st.session_state.df_main_kw = pd.DataFrame({"선택": [True]*len(main_kw_list), "주제 키워드": main_kw_list})
                     st.rerun()
+                    
     with col2:
+        # 💡 가주님을 위한 토큰 절약용 테스트 버튼
+        if st.button("🛠️ 테스트 키워드 주입 (토큰 절약)", disabled=st.session_state.step1_done, use_container_width=True):
+            st.session_state.step1_done = True
+            test_kw = ["Intergenerational Justice"]
+            st.session_state.df_main_kw = pd.DataFrame({"선택": [True]*len(test_kw), "주제 키워드": test_kw})
+            st.success("✅ 테스트 키워드가 주입되었습니다! (토큰 소모 없음)")
+            st.rerun()
+
+    with col3:
         if st.session_state.step1_done:
-            if st.button("초기화", use_container_width=False):
+            if st.button("초기화", use_container_width=True):
                 st.session_state.step1_done = False
                 st.rerun()
 
@@ -98,9 +115,7 @@ if menu == "Step 1. 시상 주제 분석":
         with c2: st.session_state.df_sub1_kw = st.data_editor(st.session_state.df_sub1_kw, hide_index=True, key="de_sub1")
         with c3: st.session_state.df_sub2_kw = st.data_editor(st.session_state.df_sub2_kw, hide_index=True, key="de_sub2")
         
-        if st.button("✨ 다음 단계로 이동", type="primary"):
-            go_to_step("Step 2. 검색어 최종 조합")
-            st.rerun()
+        st.button("✨ 다음 단계로 이동", type="primary", key="next1", on_click=go_to_step, args=("Step 2. 검색어 최종 조합",))
 
 # --- STEP 2 ---
 elif menu == "Step 2. 검색어 최종 조합":
@@ -119,9 +134,7 @@ elif menu == "Step 2. 검색어 최종 조합":
 
         if st.session_state.step2_done:
             st.session_state.df_combined = st.data_editor(st.session_state.df_combined, hide_index=False, use_container_width=True)
-            if st.button("✨ 다음 단계로 이동", type="primary"):
-                go_to_step("Step 3. URL 수집 및 교차 검증")
-                st.rerun()
+            st.button("✨ 다음 단계로 이동", type="primary", key="next2", on_click=go_to_step, args=("Step 3. URL 수집 및 교차 검증",))
 
 # --- STEP 3 ---
 elif menu == "Step 3. URL 수집 및 교차 검증":
@@ -139,13 +152,13 @@ elif menu == "Step 3. URL 수집 및 교차 검증":
             
             for i, query in enumerate(test_queries):
                 progress_bar.progress((i / len(test_queries)), text=f"검색 중: {query}")
-                urls_data = search_target_urls(query) # 3중 필터링 적용된 URL들 반환
+                urls_data = search_target_urls(query) 
                 
                 for u_data in urls_data:
                     url = u_data['link']
-                    raw_text = scrape_raw_text(url) # curl_cffi 기반 스텔스 스크래핑
+                    raw_text = scrape_raw_text(url) 
                     if raw_text:
-                        time.sleep(4) # API Rate Limit 방지
+                        time.sleep(4) 
                         award_name = extract_initial_award_name(raw_text)
                         if award_name and "관련 없음" not in award_name:
                             results_list.append({"시상명": award_name, "URL": url})
@@ -184,9 +197,7 @@ elif menu == "Step 3. URL 수집 및 교차 검증":
 
             if st.session_state.step3_verified:
                 st.session_state.df_verified_orgs = st.data_editor(st.session_state.df_verified_orgs, use_container_width=True)
-                if st.button("✨ 다음 단계로 이동", type="primary"):
-                    go_to_step("Step 4. 수상자 발굴 및 전송")
-                    st.rerun()
+                st.button("✨ 다음 단계로 이동", type="primary", key="next3", on_click=go_to_step, args=("Step 4. 수상자 발굴 및 전송",))
 
 # --- STEP 4 ---
 elif menu == "Step 4. 수상자 발굴 및 전송":
@@ -195,6 +206,7 @@ elif menu == "Step 4. 수상자 발굴 및 전송":
     else:
         final_targets = st.session_state.df_verified_orgs[st.session_state.df_verified_orgs["선택"]]
         
+        # 🚨 원래 Step 4의 올바른 로직 복구
         col1, col2 = st.columns([1, 4])
         with col1:
             if st.button("🚀 후보자 탐색 시작", disabled=st.session_state.is_running, type="primary"):
@@ -233,7 +245,6 @@ elif menu == "Step 4. 수상자 발굴 및 전송":
         if st.session_state.step4_done:
             st.dataframe(pd.DataFrame(st.session_state.all_candidates), use_container_width=True)
             if st.button("💾 n8n Webhook으로 노션(Notion) 전송", type="primary"):
-                # 이곳에 requests.post(n8n_webhook_url, json=data) 로직이 들어갈 예정입니다.
                 st.success("✅ n8n으로 데이터 전송 성공! (웹훅 연동 준비 완료)")
 
 # --- STEP 5 ---
