@@ -1,94 +1,59 @@
 import os
 import requests
 import json
-from dotenv import load_dotenv
+import streamlit as st
 
-# Load environment variables
-load_dotenv()
+# ==========================================
+# 🚨 웹훅 URL 세팅 (우선순위: 1. Streamlit Secrets -> 2. 환경변수)
+# ==========================================
+try:
+    N8N_WEBHOOK_URL = st.secrets["N8N_WEBHOOK_URL"]
+except:
+    N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL")
 
-NOTION_API_KEY = os.getenv("NOTION_API_KEY")
-NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
-
-def create_notion_page(candidate_data):
+def send_data_to_n8n(candidates_list, award_name, org_name, theme):
     """
-    Sends the extracted candidate JSON data to the specified Notion Database.
-    Make sure the property names here exactly match the property names in your Notion DB.
+    [Phase 4] 추출된 최종 후보자 배열(List)을 n8n 웹훅으로 POST 전송합니다.
+    - 데이터 구조를 노션 DB에 맵핑하기 좋게 패키징하여 보냅니다.
     """
-    url = "https://api.notion.com/v1/pages"
-    
-    headers = {
-        "Authorization": f"Bearer {NOTION_API_KEY}",
-        "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28"
-    }
-
-    # Map the JSON data to Notion's specific property structures
-    # Note: Property names ("이름", "AI 3줄 요약", etc.) must match Notion exactly.
-    data = {
-        "parent": { "database_id": NOTION_DATABASE_ID },
-        "properties": {
-            "이름": {
-                "title": [
-                    {
-                        "text": {
-                            "content": candidate_data.get("name", "Unknown")
-                        }
-                    }
-                ]
-            },
-            "AI 3줄 요약": {
-                "rich_text": [
-                    {
-                        "text": {
-                            "content": candidate_data.get("summary", "")
-                        }
-                    }
-                ]
-            },
-            "국가": {
-                "select": {
-                    "name": candidate_data.get("country", "Unknown")
-                }
-            },
-            "팩트체크(AI 교차검증)": {
-                "rich_text": [
-                    {
-                        "text": {
-                            "content": candidate_data.get("fact_check", "")
-                        }
-                    }
-                ]
-            }
-        }
-    }
-
-    try:
-        response = requests.post(url, headers=headers, data=json.dumps(data))
-        
-        if response.status_code == 200:
-            print(f"Successfully added '{candidate_data.get('name')}' to Notion!")
-            return True
-        else:
-            print(f"Failed to add to Notion. Status Code: {response.status_code}")
-            print(f"Error Details: {response.text}")
-            return False
-            
-    except Exception as e:
-        print(f"Notion API Request Error: {e}")
+    if not N8N_WEBHOOK_URL:
+        print("⚠️ 에러: N8N_WEBHOOK_URL이 설정되지 않았습니다.")
         return False
 
-# --- Main Execution Logic ---
-if __name__ == "__main__":
-    # The JSON data we got from ai_refiner.py
-    sample_json_data = {
-        "name": "Jane Doe",
-        "summary": "Jane Doe leads the 'Green Earth Initiative' since 2015, successfully planting over 1 million trees across the Nairobi region.\nShe provided clean drinking water to 5 rural villages through innovative solar-powered water pumps.\nHer efforts are recognized by the UN, and she was awarded the Africa Climate Justice Award 2025.",
-        "country": "Kenya",
-        "fact_check": "The information provided suggests high credibility. Her initiative's impact (1 million trees, 5 villages with water) is stated, and her approach is recognized by the UN. A recent award further supports her achievements."
+    if not candidates_list:
+        print(f"ℹ️ 전송할 인물 데이터가 없습니다. ({award_name})")
+        return False
+
+    # n8n이 받아서 처리하기 좋게 메타데이터와 배열을 예쁘게 포장(Payload)합니다.
+    payload = {
+        "metadata": {
+            "award_name": award_name,
+            "organization": org_name,
+            "theme": theme
+        },
+        "candidates": candidates_list
     }
-    
-    if NOTION_API_KEY and NOTION_DATABASE_ID:
-        print("1. Sending data to Notion Database...")
-        create_notion_page(sample_json_data)
-    else:
-        print("Error: Notion API Key or Database ID is missing in .env file.")
+
+    headers = {
+        'Content-Type': 'application/json'
+    }
+
+    print(f"🚀 n8n 웹훅으로 데이터 전송 시도 중... (대상: {len(candidates_list)}명)")
+
+    try:
+        # HTTP POST 요청으로 n8n 트리거를 작동시킵니다.
+        response = requests.post(N8N_WEBHOOK_URL, headers=headers, data=json.dumps(payload), timeout=15)
+        
+        # 200번대 응답(성공)인지 확인
+        if response.ok:
+            print(f"✅ n8n 전송 성공! (응답 코드: {response.status_code})")
+            return True
+        else:
+            print(f"🚫 n8n 전송 실패: 서버가 {response.status_code} 코드를 반환했습니다.")
+            print(f"상세 메시지: {response.text}")
+            return False
+
+    except requests.exceptions.RequestException as e:
+        # 인터넷 끊김, 타임아웃 등 네트워크 단 에러 처리
+        print(f"🚫 n8n 웹훅 연결 에러 (네트워크 문제): {e}")
+        return False

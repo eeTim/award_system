@@ -1,9 +1,3 @@
-'''
-스크랩핑 플랜
-플랜 A : requests + BeautifulSoup (가장 빠름, 방화벽 없는 사이트에 최적)
-플랜 B : curl_cffi (Chrome 120 지문 위조로 WAF 우회)
-'''
-
 import os
 import requests
 from curl_cffi import requests as cureq
