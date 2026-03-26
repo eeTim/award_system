@@ -52,6 +52,7 @@ def verify_and_extract_org_info(orig_text, bg_context, sample_url):
     """
     if not client: return {}
 
+    ### [수정] 공식 url 추가
     prompt = f"""
     너는 글로벌 시상식 및 지원금 프로그램의 팩트체커야. 
     아래 제공된 [스크래핑 원문]과 구글에서 추가로 수집한 [배경지식 Context]를 대조하여 환각(Hallucination) 없이 정확한 정보를 추출해.
@@ -62,11 +63,12 @@ def verify_and_extract_org_info(orig_text, bg_context, sample_url):
     [구글 배경지식 Context]
     {bg_context[:5000]}
     
-    위 정보들을 종합하여 다음 5개의 Key를 가진 JSON 객체로만 대답해. 다른 텍스트는 출력하지 마.
+    위 정보들을 종합하여 다음 6개의 Key를 가진 JSON 객체로만 대답해. 다른 텍스트는 출력하지 마.
     - "시상/프로그램명": (공식 명칭, 영어)
     - "주최/주관 기관명": (가장 상위의 공식 주최 기관명, 영어)
     - "출처 유형": (공식 홈페이지, 뉴스 기사, NGO 발표문, 알 수 없음 중 택 1)
     - "시상 주제(Theme)": (간단한 핵심 주제 1~2단어 요약)
+    - "공식 홈페이지 URL": (제공된 배경지식 Context의 Link 중 가장 공식 홈페이지로 판단되는 URL 1개. 위키피디아나 뉴스가 아닌 실제 공식 사이트를 고를 것. 도저히 없거나 확신할 수 없으면 "없음")
     - "신뢰도": (원문과 배경지식이 일치하면 "High", 모호하면 "Medium", 불일치/부족하면 "Low")
     """
     try:

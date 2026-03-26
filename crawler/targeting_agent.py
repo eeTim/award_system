@@ -116,10 +116,11 @@ def search_target_urls(query):
     return filtered_results
 
 def search_award_background(award_name):
-    """[Step 3] 팩트체크용 딥서치: 시상명에 대한 구글 검색 상위 10개 요약본(Context)을 뭉쳐서 반환합니다."""
+    """[Step 3] 팩트체크용 딥서치: 가주님의 URL 필터링 로직이 추가된 하이브리드 버전"""
     if not SERPER_API_KEY: return ""
     
-    query = f'"{award_name}" about OR history'
+    # 💡 1단계: 검색 쿼리 엔지니어링 적용 (공식 홈페이지 유도)
+    query = f'"{award_name}" official website OR about OR history'
     url = "https://google.serper.dev/search"
     payload = json.dumps({"q": query, "num": 10})
     headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
@@ -129,10 +130,20 @@ def search_award_background(award_name):
         response.raise_for_status()
         results = response.json().get('organic', [])
         
-        # 검색 결과의 제목과 요약문(Snippet)을 하나의 텍스트 덩어리로 병합
+        # 💡 2단계: 필수 도메인 블랙리스트 필터링 적용
+        # AI에게 위키백과나 SNS 링크는 아예 보여주지도 않아서 환각을 원천 차단합니다.
+        url_blacklist = ['wikipedia.org', 'namu.wiki', 'facebook.com', 'youtube.com', 'instagram.com', 'twitter.com', 'linkedin.com', 'news']
+        
         context = ""
         for res in results:
-            context += f"Title: {res.get('title')}\nSnippet: {res.get('snippet')}\n\n"
+            link = res.get('link', '').lower()
+            
+            # 블랙리스트에 포함된 도메인이면 Context에 넣지 않고 건너뜀 (Drop)
+            if any(bad_domain in link for bad_domain in url_blacklist):
+                continue
+                
+            context += f"Title: {res.get('title')}\nLink: {res.get('link')}\nSnippet: {res.get('snippet')}\n\n"
+            
         return context
     except Exception as e:
         print(f"배경지식 검색 에러: {e}")
