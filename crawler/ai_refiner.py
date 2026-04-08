@@ -17,15 +17,26 @@ else:
     client = None
     print("⚠️ 경고: GEMINI_API_KEY가 설정되지 않았습니다.")
 
+def _get_gemini_client(gemini_api_key=None):
+    runtime_key = (gemini_api_key or "").strip()
+    if runtime_key:
+        try:
+            return genai.Client(api_key=runtime_key)
+        except Exception as e:
+            print(f"사용자 Gemini API 키 초기화 에러: {e}")
+            return None
+    return client
+
 # ==========================================
 # 핵심 AI 분석 함수 로직
 # ==========================================
 
-def extract_initial_award_name(raw_text):
+def extract_initial_award_name(raw_text, gemini_api_key=None):
     """
     [Phase 2] 1차 스크래핑된 웹사이트 본문에서 '단 하나의 공식 시상/프로그램명'만 추출합니다.
     """
-    if not client or not raw_text: return "관련 없음"
+    active_client = _get_gemini_client(gemini_api_key)
+    if not active_client or not raw_text: return "관련 없음"
     
     prompt = f"""
     아래 주어진 웹사이트 텍스트에서 이 문서가 다루고 있는 '가장 핵심적인 1개의 정식 시상식 또는 지원금 프로그램 이름(고유명사)'을 영어로 추출해.
@@ -36,7 +47,7 @@ def extract_initial_award_name(raw_text):
     {raw_text[:8000]}
     """
     try:
-        response = client.models.generate_content(
+        response = active_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
         )
@@ -46,11 +57,12 @@ def extract_initial_award_name(raw_text):
         return "관련 없음"
 
 
-def verify_and_extract_org_info(orig_text, bg_context, sample_url):
+def verify_and_extract_org_info(orig_text, bg_context, sample_url, gemini_api_key=None):
     """
     [Phase 3] 원문 텍스트와 딥서치 배경지식을 교차 검증하여 최종 기관 정보를 JSON으로 팩트체크합니다.
     """
-    if not client: return {}
+    active_client = _get_gemini_client(gemini_api_key)
+    if not active_client: return {}
 
     ### [수정] 공식 url 추가
     prompt = f"""
@@ -72,7 +84,7 @@ def verify_and_extract_org_info(orig_text, bg_context, sample_url):
     - "신뢰도": (원문과 배경지식이 일치하면 "High", 모호하면 "Medium", 불일치/부족하면 "Low")
     """
     try:
-        response = client.models.generate_content(
+        response = active_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
         )
@@ -86,11 +98,12 @@ def verify_and_extract_org_info(orig_text, bg_context, sample_url):
         }
 
 
-def extract_candidate_info(w_text):
+def extract_candidate_info(w_text, gemini_api_key=None):
     """
     [Phase 4] 수상자 발표문에서 최종 인물(후보자) 명단과 이력을 배열(List of Dicts)로 추출합니다.
     """
-    if not client or not w_text: return []
+    active_client = _get_gemini_client(gemini_api_key)
+    if not active_client or not w_text: return []
 
     prompt = f"""
     아래 텍스트는 특정 시상식의 수상자(Winner) 또는 최종 후보자(Finalist)를 발표하는 문서야.
@@ -107,7 +120,7 @@ def extract_candidate_info(w_text):
     {w_text[:8000]}
     """
     try:
-        response = client.models.generate_content(
+        response = active_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
         )

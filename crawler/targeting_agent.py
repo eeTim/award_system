@@ -25,6 +25,16 @@ else:
     client = None
     print("⚠️ 경고: GEMINI_API_KEY가 설정되지 않았습니다.")
 
+def _get_gemini_client(gemini_api_key=None):
+    runtime_key = (gemini_api_key or "").strip()
+    if runtime_key:
+        try:
+            return genai.Client(api_key=runtime_key)
+        except Exception as e:
+            print(f"사용자 Gemini API 키 초기화 에러: {e}")
+            return None
+    return client
+
 # ==========================================
 # 3중 블랙리스트 세팅 (가비지 데이터 차단망)
 # ==========================================
@@ -58,9 +68,10 @@ def extract_text_from_pdf(pdf_path):
         print(f"PDF 파싱 에러: {e}")
     return text
 
-def get_search_keywords_from_ai(text):
+def get_search_keywords_from_ai(text, gemini_api_key=None):
     """[Step 1] 제미나이를 호출하여 PDF 본문에서 핵심 주제(Theme) 키워드 배열을 뽑아냅니다."""
-    if not client: return []
+    active_client = _get_gemini_client(gemini_api_key)
+    if not active_client: return []
     
     prompt = f"""
     아래 텍스트는 특정 시상식이나 지원금 프로그램의 심사 기준입니다.
@@ -74,7 +85,7 @@ def get_search_keywords_from_ai(text):
     {text[:5000]}
     """
     try:
-        response = client.models.generate_content(
+        response = active_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
         )
