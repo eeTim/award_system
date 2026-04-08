@@ -4,6 +4,7 @@ import time
 import logging
 import urllib3
 import json
+from google import genai
 from dotenv import load_dotenv
 
 # 1. 환경변수 로드 및 시스템 세팅
@@ -40,6 +41,10 @@ SUB2_KEYWORDS = ["global", "africa", "asia", "europe", "korea", "kenya", "south 
 
 if 'theme_text' not in st.session_state: st.session_state.theme_text = ""
 if 'user_gemini_api_key' not in st.session_state: st.session_state.user_gemini_api_key = ""
+if 'user_gemini_api_key_input' not in st.session_state: st.session_state.user_gemini_api_key_input = ""
+if 'use_user_gemini_api_key' not in st.session_state: st.session_state.use_user_gemini_api_key = False
+if 'user_key_validated' not in st.session_state: st.session_state.user_key_validated = False
+if 'last_validated_key' not in st.session_state: st.session_state.last_validated_key = ""
 if 'current_step' not in st.session_state: st.session_state.current_step = "Step 1. 시상 주제 분석"
 
 if 'df_main_kw' not in st.session_state: st.session_state.df_main_kw = pd.DataFrame(columns=["선택", "주제 키워드"])
@@ -69,8 +74,34 @@ def go_to_step(step_name):
     st.session_state.current_step = step_name
 
 def get_active_gemini_api_key():
+    if not st.session_state.use_user_gemini_api_key:
+        return None
     api_key = st.session_state.user_gemini_api_key.strip()
     return api_key if api_key else None
+
+def validate_gemini_api_key(api_key):
+    key = (api_key or "").strip()
+    if not key:
+        return False, "API 키가 비어 있습니다."
+    try:
+        temp_client = genai.Client(api_key=key)
+        temp_client.models.generate_content(
+            model=AI_MODEL,
+            contents="health check"
+        )
+        return True, "정상 등록되었습니다."
+    except Exception as e:
+        err = str(e)
+        lower = err.lower()
+        if "api key not valid" in lower or "invalid" in lower:
+            return False, "API 키가 유효하지 않습니다."
+        if "permission" in lower:
+            return False, "해당 키에 모델 호출 권한이 없습니다."
+        if "quota" in lower or "rate limit" in lower:
+            return False, "쿼터 또는 호출 한도에 도달했습니다."
+        if "model" in lower and "not found" in lower:
+            return False, f"모델({AI_MODEL}) 접근이 불가능합니다."
+        return False, f"검증 실패: {err[:160]}"
 
 def _as_text_length(value):
     if value is None:
@@ -119,21 +150,61 @@ if menu == "Step 0. API 설정":
     st.header("Step 0. 개인 Gemini API 키 설정")
     st.info("기본값은 서버(.env) 토큰입니다. 사용자가 키를 입력하면 이후부터 현재 세션에서는 사용자 키가 우선 적용됩니다.")
 
-    st.text_input(
-        "Gemini API Key",
-        type="password",
-        key="user_gemini_api_key",
-        placeholder="AIza... 형태의 Gemini API 키를 입력하세요."
-    )
+    key_col, toggle_col = st.columns([5, 1.6])
+    with key_col:
+        st.text_input(
+            "Gemini API Key",
+            type="password",
+            key="user_gemini_api_key_input",
+            placeholder="AIza... 형태의 Gemini API 키를 입력하세요."
+        )
+    with toggle_col:
+        st.toggle("입력 키 사용", key="use_user_gemini_api_key")
 
-    if st.session_state.user_gemini_api_key.strip():
-        masked_key = st.session_state.user_gemini_api_key.strip()
-        st.success(f"현재 모드: 사용자 입력 키 사용 중 ({masked_key[:6]}...{masked_key[-4:]})")
-        if st.button("입력 키 삭제하고 서버 기본 키로 전환"):
-            st.session_state.user_gemini_api_key = ""
-            st.rerun()
+    if st.session_state.use_user_gemini_api_key:
+        candidate_key = st.session_state.user_gemini_api_key_input.strip() or st.session_state.user_gemini_api_key.strip()
+        if not candidate_key:
+            st.session_state.use_user_gemini_api_key = False
+            st.session_state.user_key_validated = False
+            st.toast("API 키를 먼저 입력해 주세요.", icon="⚠️")
+            st.warning("현재 모드: 서버 기본 Gemini 키 사용")
+        elif (not st.session_state.user_key_validated) or (candidate_key != st.session_state.last_validated_key):
+            with st.spinner("API 키 검증 중..."):
+                is_valid, message = validate_gemini_api_key(candidate_key)
+            if is_valid:
+                st.session_state.user_gemini_api_key = candidate_key
+                st.session_state.last_validated_key = candidate_key
+                st.session_state.user_key_validated = True
+                st.toast("Gemini API 키가 정상 등록되었습니다.", icon="✅")
+                masked_key = candidate_key
+                st.success(f"현재 모드: 사용자 입력 키 사용 중 ({masked_key[:6]}...{masked_key[-4:]})")
+            else:
+                st.session_state.use_user_gemini_api_key = False
+                st.session_state.user_key_validated = False
+                st.toast("Gemini API 키 등록에 실패했습니다.", icon="❌")
+                st.error(f"등록 실패 사유: {message}")
+                st.warning("현재 모드: 서버 기본 Gemini 키 사용")
+        else:
+            masked_key = st.session_state.user_gemini_api_key
+            st.success(f"현재 모드: 사용자 입력 키 사용 중 ({masked_key[:6]}...{masked_key[-4:]})")
     else:
         st.warning("현재 모드: 서버 기본 Gemini 키 사용")
+
+    btn1, btn2 = st.columns(2)
+    with btn1:
+        if st.button("기본 API로 돌아가기", use_container_width=True):
+            st.session_state.use_user_gemini_api_key = False
+            st.toast("서버 기본 API 키 모드로 전환했습니다.", icon="ℹ️")
+            st.rerun()
+    with btn2:
+        if st.button("입력 키 완전 삭제", use_container_width=True):
+            st.session_state.user_gemini_api_key = ""
+            st.session_state.user_gemini_api_key_input = ""
+            st.session_state.user_key_validated = False
+            st.session_state.last_validated_key = ""
+            st.session_state.use_user_gemini_api_key = False
+            st.toast("저장된 사용자 API 키를 삭제했습니다.", icon="🧹")
+            st.rerun()
 
     st.divider()
     st.subheader("현재 사용 모델 상태")
