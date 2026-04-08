@@ -24,6 +24,8 @@ AI_MODEL = "gemini-2.5-flash"
 PRICING_INPUT_PER_1M_USD = 0.30
 PRICING_OUTPUT_PER_1M_USD = 2.50
 EST_CHARS_PER_TOKEN = 4
+MODEL_TOKEN_LIMIT = 1_000_000
+MODEL_TOKEN_REFILL = "요청 단위로 리셋 (컨텍스트 윈도우 기준)"
 
 # ==========================================
 # 3. Session State (전역 메모리) 초기화
@@ -55,8 +57,6 @@ if 'usage_stats' not in st.session_state:
         "output_tokens": 0,
         "estimated_cost_usd": 0.0
     }
-if 'session_token_limit' not in st.session_state: st.session_state.session_token_limit = 1_000_000
-if 'session_budget_limit_usd' not in st.session_state: st.session_state.session_budget_limit_usd = 10.0
 
 if 'step1_done' not in st.session_state: st.session_state.step1_done = False
 if 'step2_done' not in st.session_state: st.session_state.step2_done = False
@@ -136,47 +136,49 @@ if menu == "Step 0. API 설정":
         st.warning("현재 모드: 서버 기본 Gemini 키 사용")
 
     st.divider()
-    st.subheader("모델/요금 안내")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("모델", AI_MODEL)
-    c2.metric("제조사", AI_VENDOR)
-    c3.metric("정산 기준", "per 1M tokens")
+    st.subheader("현재 사용 모델 상태")
+    used_tokens = st.session_state.usage_stats["input_tokens"] + st.session_state.usage_stats["output_tokens"]
+    remaining_tokens = max(0, int(MODEL_TOKEN_LIMIT - used_tokens))
+    used_cost = st.session_state.usage_stats["estimated_cost_usd"]
+    current_cost_label = "무료" if used_cost <= 0 else f"${used_cost:.6f} (추정)"
 
-    chars_1000_tokens = _estimate_tokens(1000)
-    est_in_1000 = (chars_1000_tokens / 1_000_000) * PRICING_INPUT_PER_1M_USD
-    est_out_1000 = (chars_1000_tokens / 1_000_000) * PRICING_OUTPUT_PER_1M_USD
+    status_df = pd.DataFrame([{
+        "현재 사용 모델": AI_MODEL,
+        "토큰 한도": f"{MODEL_TOKEN_LIMIT:,} tokens",
+        "토큰 주기": MODEL_TOKEN_REFILL,
+        "현재까지 비용": current_cost_label
+    }])
+    st.dataframe(status_df, use_container_width=True, hide_index=True)
 
-    st.caption(
-        f"대략 1,000글자 ≈ {chars_1000_tokens}토큰 추정. "
-        f"입력 1,000글자 약 ${est_in_1000:.6f}, 출력 1,000글자 약 ${est_out_1000:.6f}."
-    )
-    st.caption(
-        f"기준 단가(표준): 입력 ${PRICING_INPUT_PER_1M_USD}/1M, 출력 ${PRICING_OUTPUT_PER_1M_USD}/1M."
-    )
+    s1, s2, s3 = st.columns(3)
+    s1.metric("세션 호출 수", f'{st.session_state.usage_stats["api_calls"]}회')
+    s2.metric("누적 사용 토큰(추정)", f"{used_tokens:,}")
+    s3.metric("남은 토큰(추정)", f"{remaining_tokens:,}")
+
+    p1 = min(1.0, used_tokens / max(1, MODEL_TOKEN_LIMIT))
+    st.progress(p1, text=f"모델 컨텍스트 한도 대비 사용률(추정): {p1*100:.2f}%")
 
     st.divider()
-    st.subheader("토큰/한도 상태 (세션 추정)")
-    col_limit_1, col_limit_2 = st.columns(2)
-    with col_limit_1:
-        st.number_input("세션 토큰 한도(추정)", min_value=1000, step=1000, key="session_token_limit")
-    with col_limit_2:
-        st.number_input("세션 예산 한도(USD, 추정)", min_value=0.1, step=0.1, key="session_budget_limit_usd")
-
-    used_tokens = st.session_state.usage_stats["input_tokens"] + st.session_state.usage_stats["output_tokens"]
-    remaining_tokens = max(0, int(st.session_state.session_token_limit - used_tokens))
-    used_cost = st.session_state.usage_stats["estimated_cost_usd"]
-    remaining_cost = max(0.0, float(st.session_state.session_budget_limit_usd - used_cost))
-
-    s1, s2, s3, s4 = st.columns(4)
-    s1.metric("세션 호출 수", f'{st.session_state.usage_stats["api_calls"]}회')
-    s2.metric("사용 토큰(추정)", f"{used_tokens:,}")
-    s3.metric("남은 토큰(추정)", f"{remaining_tokens:,}")
-    s4.metric("남은 예산(추정)", f"${remaining_cost:.4f}")
-
-    p1 = min(1.0, used_tokens / max(1, int(st.session_state.session_token_limit)))
-    p2 = min(1.0, used_cost / max(0.0001, float(st.session_state.session_budget_limit_usd)))
-    st.progress(p1, text=f"토큰 사용률(추정): {p1*100:.2f}%")
-    st.progress(p2, text=f"예산 사용률(추정): {p2*100:.2f}%")
+    st.subheader("모델 요금 안내")
+    pricing_df = pd.DataFrame([
+        {"브랜드": "OpenAI", "모델": "GPT-5.4", "무료 여부": "유료", "입력 비용": "$2.50 / 1M (=$0.0000025/토큰)", "출력 비용": "$15.00 / 1M (=$0.000015/토큰)"},
+        {"브랜드": "OpenAI", "모델": "GPT-5.4 mini", "무료 여부": "유료", "입력 비용": "$0.75 / 1M", "출력 비용": "$4.50 / 1M"},
+        {"브랜드": "OpenAI", "모델": "GPT-5.4 nano", "무료 여부": "유료", "입력 비용": "$0.20 / 1M", "출력 비용": "$1.25 / 1M"},
+        {"브랜드": "Google Gemini Developer API", "모델": "Gemini 3 Flash Preview", "무료 여부": "무료 등급 있음", "입력 비용": "무료 / 유료 $0.50 / 1M", "출력 비용": "무료 / 유료 $3.00 / 1M"},
+        {"브랜드": "Google Gemini Developer API", "모델": "Gemini 3.1 Flash-Lite Preview", "무료 여부": "무료 등급 있음", "입력 비용": "무료 / 유료 $0.25 / 1M", "출력 비용": "무료 / 유료 $1.50 / 1M"},
+        {"브랜드": "Google Gemini Developer API", "모델": "Gemini 3.1 Flash Live Preview", "무료 여부": "무료 등급 있음", "입력 비용": "무료 / 유료 텍스트 $0.75 / 1M", "출력 비용": "무료 / 유료 텍스트 $4.50 / 1M"},
+        {"브랜드": "Anthropic", "모델": "Claude Opus 4.6", "무료 여부": "유료", "입력 비용": "$5 / 1M", "출력 비용": "$25 / 1M"},
+        {"브랜드": "Anthropic", "모델": "Claude Sonnet 4.6", "무료 여부": "유료", "입력 비용": "$3 / 1M", "출력 비용": "$15 / 1M"},
+        {"브랜드": "Anthropic", "모델": "Claude Haiku 4.5", "무료 여부": "유료", "입력 비용": "$1 / 1M", "출력 비용": "$5 / 1M"},
+        {"브랜드": "Mistral", "모델": "Mistral Large 3", "무료 여부": "유료", "입력 비용": "$0.50 / 1M", "출력 비용": "$1.50 / 1M"},
+        {"브랜드": "Mistral", "모델": "Mistral Medium 3 / 3.1", "무료 여부": "유료", "입력 비용": "$0.40 / 1M", "출력 비용": "$2.00 / 1M"},
+        {"브랜드": "Mistral", "모델": "Mistral Small 4", "무료 여부": "유료", "입력 비용": "$0.15 / 1M", "출력 비용": "$0.60 / 1M"},
+        {"브랜드": "Cohere", "모델": "Command A", "무료 여부": "유료", "입력 비용": "$2.50 / 1M", "출력 비용": "$10 / 1M"},
+        {"브랜드": "Cohere", "모델": "Trial API key", "무료 여부": "무료(평가용)", "입력 비용": "무료", "출력 비용": "무료"},
+        {"브랜드": "DeepSeek", "모델": "deepseek-chat", "무료 여부": "유료", "입력 비용": "캐시히트/미스가 다름", "출력 비용": "출력 별도"},
+        {"브랜드": "DeepSeek", "모델": "deepseek-reasoner", "무료 여부": "유료", "입력 비용": "캐시히트/미스가 다름", "출력 비용": "출력 별도"},
+    ])
+    st.dataframe(pricing_df, use_container_width=True, hide_index=True)
 
     st.button("✨ 다음 단계로 이동", type="primary", key="next0", on_click=go_to_step, args=("Step 1. 시상 주제 분석",))
 
