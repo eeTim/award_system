@@ -95,7 +95,7 @@ def get_search_keywords_from_ai(text, gemini_api_key=None):
         print(f"AI 키워드 추출 에러: {e}")
         return []
 
-def search_target_urls(query):
+def search_target_urls(query, num_results=10):
     """[Step 3] 검색어(Dorks)로 구글을 타격하고 3중 블랙리스트로 걸러낸 순도 높은 URL 배열을 반환합니다."""
     if not SERPER_API_KEY: return []
     
@@ -104,7 +104,7 @@ def search_target_urls(query):
     final_query = query + dorks
     
     url = "https://google.serper.dev/search"
-    payload = json.dumps({"q": final_query, "num": 10})
+    payload = json.dumps({"q": final_query, "num": num_results})
     headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
     
     try:

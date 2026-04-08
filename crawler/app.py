@@ -5,6 +5,8 @@ import logging
 import urllib3
 import json
 import os
+import re
+from urllib.parse import urlparse
 from google import genai
 from dotenv import load_dotenv
 
@@ -34,7 +36,7 @@ DATAFRAME_STATE_KEYS = {
     "df_sub1_kw": ["선택", "서브 키워드 1"],
     "df_sub2_kw": ["선택", "서브 키워드 2"],
     "df_combined": ["선택", "검색어"],
-    "df_urls": ["선택", "시상명", "URL"],
+    "df_urls": ["선택", "시상명", "기관명(추정)", "품질점수", "URL"],
     "df_verified_orgs": []
 }
 PERSIST_KEYS = [
@@ -42,7 +44,8 @@ PERSIST_KEYS = [
     "df_main_kw", "df_sub1_kw", "df_sub2_kw", "df_combined", "df_urls", "df_verified_orgs",
     "step1_done", "step2_done", "step3_extracted", "step3_verified", "step4_done",
     "all_candidates", "candidate_batches", "usage_stats",
-    "use_user_gemini_api_key", "user_key_validated"
+    "use_user_gemini_api_key", "user_key_validated",
+    "step3_query_limit", "step3_results_per_query"
 ]
 
 # ==========================================
@@ -68,7 +71,7 @@ if 'df_main_kw' not in st.session_state: st.session_state.df_main_kw = pd.DataFr
 if 'df_sub1_kw' not in st.session_state: st.session_state.df_sub1_kw = pd.DataFrame({"선택": [True]*len(SUB1_KEYWORDS), "서브 키워드 1": SUB1_KEYWORDS})
 if 'df_sub2_kw' not in st.session_state: st.session_state.df_sub2_kw = pd.DataFrame({"선택": [False]*len(SUB2_KEYWORDS), "서브 키워드 2": SUB2_KEYWORDS})
 if 'df_combined' not in st.session_state: st.session_state.df_combined = pd.DataFrame(columns=["선택", "검색어"])
-if 'df_urls' not in st.session_state: st.session_state.df_urls = pd.DataFrame(columns=["선택", "시상명", "URL"])
+if 'df_urls' not in st.session_state: st.session_state.df_urls = pd.DataFrame(columns=["선택", "시상명", "기관명(추정)", "품질점수", "URL"])
 if 'df_verified_orgs' not in st.session_state: st.session_state.df_verified_orgs = pd.DataFrame()
 if 'all_candidates' not in st.session_state: st.session_state.all_candidates = []
 if 'candidate_batches' not in st.session_state: st.session_state.candidate_batches = []
@@ -86,6 +89,8 @@ if 'step3_extracted' not in st.session_state: st.session_state.step3_extracted =
 if 'step3_verified' not in st.session_state: st.session_state.step3_verified = False
 if 'step4_done' not in st.session_state: st.session_state.step4_done = False
 if 'is_running' not in st.session_state: st.session_state.is_running = False
+if 'step3_query_limit' not in st.session_state: st.session_state.step3_query_limit = 6
+if 'step3_results_per_query' not in st.session_state: st.session_state.step3_results_per_query = 10
 
 def go_to_step(step_name):
     st.session_state.current_step = step_name
@@ -203,6 +208,47 @@ def persist_and_rerun():
 if "_work_state_loaded" not in st.session_state:
     st.session_state._work_state_loaded = True
     load_work_state()
+
+def normalize_award_name(award_name):
+    if not award_name:
+        return ""
+    normalized = award_name.lower().strip()
+    normalized = re.sub(r"\([^)]*\)", " ", normalized)
+    normalized = re.sub(r"\b20\d{2}(?:/\d{2})?\b", " ", normalized)
+    normalized = re.sub(r"[^a-z0-9가-힣 ]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+def infer_org_from_url(url):
+    try:
+        host = urlparse(url).netloc.lower().replace("www.", "")
+    except Exception:
+        return "N/A"
+    if not host:
+        return "N/A"
+    base = host.split(".")[0]
+    base = re.sub(r"[-_]", " ", base)
+    return " ".join(word.capitalize() for word in base.split()) or "N/A"
+
+def url_quality_score(url):
+    try:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        path = parsed.path.lower()
+    except Exception:
+        return 0
+    score = 0
+    if any(token in path for token in ["award", "prize", "fellowship", "program", "initiative"]):
+        score += 3
+    if any(token in path for token in ["winner", "recipient", "finalist"]):
+        score += 2
+    if any(token in path for token in ["/news/", "/blog/", "/press", "/article", "/research-posts/"]):
+        score -= 2
+    if any(token in host for token in ["medium.com", "wordpress.com", "substack.com"]):
+        score -= 2
+    if path.count("/") <= 2:
+        score += 1
+    return score
 
 # ==========================================
 # 4. 사이드바 (내비게이션)
@@ -464,12 +510,37 @@ elif menu == "Step 3. URL 수집 및 교차 검증":
         if not SERPER_API_KEY:
             st.error("SERPER_API_KEY가 설정되지 않아 Step 3 검색을 실행할 수 없습니다. .env 또는 secrets 설정을 확인해 주세요.")
 
+        active_queries = st.session_state.df_combined[st.session_state.df_combined["선택"]]["검색어"].tolist()
+        if active_queries:
+            max_query_cap = len(active_queries)
+            if st.session_state.step3_query_limit > max_query_cap:
+                st.session_state.step3_query_limit = max_query_cap
+            conf1, conf2 = st.columns(2)
+            with conf1:
+                st.session_state.step3_query_limit = st.slider(
+                    "처리할 검색어 개수",
+                    min_value=1,
+                    max_value=max_query_cap,
+                    value=max(1, st.session_state.step3_query_limit),
+                    help="검색어 개수를 늘리면 더 다양한 기관이 탐색되지만 시간이 더 걸립니다."
+                )
+            with conf2:
+                st.session_state.step3_results_per_query = st.slider(
+                    "쿼리당 검색 결과 수",
+                    min_value=5,
+                    max_value=20,
+                    value=st.session_state.step3_results_per_query,
+                    step=1
+                )
+        else:
+            st.info("Step 2에서 선택된 검색어가 아직 없습니다.")
+
         reset_col1, reset_col2 = st.columns(2)
         with reset_col1:
             if st.button("🔄 1차 발췌 다시 실행", use_container_width=True):
                 st.session_state.step3_extracted = False
                 st.session_state.step3_verified = False
-                st.session_state.df_urls = pd.DataFrame(columns=["선택", "시상명", "URL"])
+                st.session_state.df_urls = pd.DataFrame(columns=["선택", "시상명", "기관명(추정)", "품질점수", "URL"])
                 st.session_state.df_verified_orgs = pd.DataFrame()
                 persist_and_rerun()
         with reset_col2:
@@ -480,21 +551,20 @@ elif menu == "Step 3. URL 수집 및 교차 검증":
 
         # Phase 3A: 1차 발췌
         if st.button("1️⃣ 원문 스크랩 및 1차 발췌", disabled=st.session_state.step3_extracted or (not SERPER_API_KEY)):
-            active_queries = st.session_state.df_combined[st.session_state.df_combined["선택"]]["검색어"].tolist()
-            test_queries = active_queries[:3] # 테스트용 제한
-            if not test_queries:
+            selected_queries = active_queries[:st.session_state.step3_query_limit]
+            if not selected_queries:
                 st.warning("선택된 검색어가 없습니다. Step 2에서 최소 1개를 선택해 주세요.")
             else:
                 st.session_state.step3_extracted = True
                 progress_bar = st.progress(0, text="검색 준비 중...")
-                results_list = []
+                candidates = []
                 total_search_hits = 0
                 total_scraped = 0
 
-                for i, query in enumerate(test_queries):
-                    progress_bar.progress(((i + 1) / len(test_queries)), text=f"검색 중: {query}")
+                for i, query in enumerate(selected_queries):
+                    progress_bar.progress(((i + 1) / len(selected_queries)), text=f"검색 중: {query}")
                     try:
-                        urls_data = search_target_urls(query)
+                        urls_data = search_target_urls(query, num_results=st.session_state.step3_results_per_query)
                     except Exception as e:
                         logging.exception(f"Step3 search_target_urls 실패: {e}")
                         urls_data = []
@@ -517,20 +587,48 @@ elif menu == "Step 3. URL 수집 및 교차 검증":
                                 output_payload=award_name
                             )
                             if award_name and "관련 없음" not in award_name:
-                                results_list.append({"시상명": award_name, "URL": url})
+                                candidates.append({
+                                    "시상명_raw": award_name,
+                                    "시상명_norm": normalize_award_name(award_name),
+                                    "기관명(추정)": infer_org_from_url(url),
+                                    "품질점수": url_quality_score(url),
+                                    "URL": url
+                                })
 
-                if results_list:
-                    df = pd.DataFrame(results_list)
-                    df_grouped = df.groupby('시상명', as_index=False).agg({'URL': lambda x: '\n'.join(x)})
-                    df_grouped.insert(0, '선택', True)
-                    st.session_state.df_urls = df_grouped
+                if candidates:
+                    df = pd.DataFrame(candidates)
+                    df = df[df["시상명_norm"] != ""].copy()
+                    if not df.empty:
+                        grouped_rows = []
+                        for _, group in df.groupby("시상명_norm", dropna=True):
+                            group_sorted = group.sort_values(by=["품질점수"], ascending=False)
+                            display_name = group_sorted.iloc[0]["시상명_raw"]
+                            org_name = group_sorted.iloc[0]["기관명(추정)"]
+                            top_score = int(group_sorted.iloc[0]["품질점수"])
+                            unique_urls = list(dict.fromkeys(group_sorted["URL"].tolist()))
+                            grouped_rows.append({
+                                "선택": True,
+                                "시상명": display_name,
+                                "기관명(추정)": org_name,
+                                "품질점수": top_score,
+                                "URL": "\n".join(unique_urls)
+                            })
+
+                        df_grouped = pd.DataFrame(grouped_rows).sort_values(
+                            by=["품질점수", "시상명"],
+                            ascending=[False, True]
+                        )
+                        st.session_state.df_urls = df_grouped.reset_index(drop=True)
+                    else:
+                        st.session_state.df_urls = pd.DataFrame(columns=["선택", "시상명", "기관명(추정)", "품질점수", "URL"])
+
                     st.toast(
-                        f"1차 발췌 완료: 검색 {len(test_queries)}개, URL {total_search_hits}개, 본문 추출 {total_scraped}개, 시상 후보 {len(df_grouped)}개",
+                        f"1차 발췌 완료: 검색 {len(selected_queries)}개, URL {total_search_hits}개, 본문 추출 {total_scraped}개, 시상 후보 {len(st.session_state.df_urls)}개",
                         icon="✅"
                     )
                 else:
                     st.session_state.step3_extracted = False
-                    st.session_state.df_urls = pd.DataFrame(columns=["선택", "시상명", "URL"])
+                    st.session_state.df_urls = pd.DataFrame(columns=["선택", "시상명", "기관명(추정)", "품질점수", "URL"])
                     st.warning(
                         "1차 발췌 결과가 0건입니다. 가능한 원인: SERPER 쿼터/키 문제, 검색어 선택 부족, 사이트 본문 스크랩 실패."
                     )
