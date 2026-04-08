@@ -150,7 +150,7 @@ if menu == "Step 0. API 설정":
     st.header("Step 0. 개인 Gemini API 키 설정")
     st.info("기본값은 서버(.env) 토큰입니다. 사용자가 키를 입력하면 이후부터 현재 세션에서는 사용자 키가 우선 적용됩니다.")
 
-    key_col, toggle_col = st.columns([5, 1.6])
+    key_col, action_col = st.columns([5, 1.6])
     with key_col:
         st.text_input(
             "Gemini API Key",
@@ -158,35 +158,32 @@ if menu == "Step 0. API 설정":
             key="user_gemini_api_key_input",
             placeholder="AIza... 형태의 Gemini API 키를 입력하세요."
         )
-    with toggle_col:
-        st.toggle("입력 키 사용", key="use_user_gemini_api_key")
+    with action_col:
+        register_clicked = st.button("키 등록/사용", use_container_width=True)
 
-    if st.session_state.use_user_gemini_api_key:
-        candidate_key = st.session_state.user_gemini_api_key_input.strip() or st.session_state.user_gemini_api_key.strip()
+    if register_clicked:
+        candidate_key = st.session_state.user_gemini_api_key_input.strip()
         if not candidate_key:
-            st.session_state.use_user_gemini_api_key = False
-            st.session_state.user_key_validated = False
             st.toast("API 키를 먼저 입력해 주세요.", icon="⚠️")
-            st.warning("현재 모드: 서버 기본 Gemini 키 사용")
-        elif (not st.session_state.user_key_validated) or (candidate_key != st.session_state.last_validated_key):
+            st.error("등록 실패 사유: API 키가 비어 있습니다.")
+        else:
             with st.spinner("API 키 검증 중..."):
                 is_valid, message = validate_gemini_api_key(candidate_key)
             if is_valid:
                 st.session_state.user_gemini_api_key = candidate_key
                 st.session_state.last_validated_key = candidate_key
                 st.session_state.user_key_validated = True
+                st.session_state.use_user_gemini_api_key = True
                 st.toast("Gemini API 키가 정상 등록되었습니다.", icon="✅")
-                masked_key = candidate_key
-                st.success(f"현재 모드: 사용자 입력 키 사용 중 ({masked_key[:6]}...{masked_key[-4:]})")
             else:
                 st.session_state.use_user_gemini_api_key = False
                 st.session_state.user_key_validated = False
                 st.toast("Gemini API 키 등록에 실패했습니다.", icon="❌")
                 st.error(f"등록 실패 사유: {message}")
-                st.warning("현재 모드: 서버 기본 Gemini 키 사용")
-        else:
-            masked_key = st.session_state.user_gemini_api_key
-            st.success(f"현재 모드: 사용자 입력 키 사용 중 ({masked_key[:6]}...{masked_key[-4:]})")
+
+    if st.session_state.use_user_gemini_api_key and st.session_state.user_gemini_api_key.strip():
+        masked_key = st.session_state.user_gemini_api_key.strip()
+        st.success(f"현재 모드: 사용자 입력 키 사용 중 ({masked_key[:6]}...{masked_key[-4:]})")
     else:
         st.warning("현재 모드: 서버 기본 Gemini 키 사용")
 
@@ -308,10 +305,38 @@ elif menu == "Step 1. 시상 주제 분석":
                 st.rerun()
 
     if st.session_state.step1_done:
-        c1, c2, c3 = st.columns(3)
-        with c1: st.session_state.df_main_kw = st.data_editor(st.session_state.df_main_kw, hide_index=True, key="de_main")
-        with c2: st.session_state.df_sub1_kw = st.data_editor(st.session_state.df_sub1_kw, hide_index=True, key="de_sub1")
-        with c3: st.session_state.df_sub2_kw = st.data_editor(st.session_state.df_sub2_kw, hide_index=True, key="de_sub2")
+        st.caption("체크박스 변경 후 '선택 변경 적용' 버튼을 누르면 한 번에 반영됩니다.")
+        with st.form("step1_keyword_form", clear_on_submit=False):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                edited_main = st.data_editor(
+                    st.session_state.df_main_kw,
+                    hide_index=True,
+                    key="de_main",
+                    use_container_width=True
+                )
+            with c2:
+                edited_sub1 = st.data_editor(
+                    st.session_state.df_sub1_kw,
+                    hide_index=True,
+                    key="de_sub1",
+                    use_container_width=True
+                )
+            with c3:
+                edited_sub2 = st.data_editor(
+                    st.session_state.df_sub2_kw,
+                    hide_index=True,
+                    key="de_sub2",
+                    use_container_width=True
+                )
+
+            apply_clicked = st.form_submit_button("✅ 선택 변경 적용", use_container_width=True)
+
+        if apply_clicked:
+            st.session_state.df_main_kw = edited_main
+            st.session_state.df_sub1_kw = edited_sub1
+            st.session_state.df_sub2_kw = edited_sub2
+            st.toast("키워드 선택 변경을 반영했습니다.", icon="✅")
         
         st.button("✨ 다음 단계로 이동", type="primary", key="next1", on_click=go_to_step, args=("Step 2. 검색어 최종 조합",))
 
