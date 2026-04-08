@@ -4,6 +4,7 @@ import time
 import logging
 import urllib3
 import json
+import os
 from google import genai
 from dotenv import load_dotenv
 
@@ -13,7 +14,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(filename='system.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # 2. 백엔드 엔진 모듈 임포트
-from targeting_agent import extract_text_from_pdf, get_search_keywords_from_ai, search_target_urls, search_award_background, search_award_winners
+from targeting_agent import extract_text_from_pdf, get_search_keywords_from_ai, search_target_urls, search_award_background, search_award_winners, SERPER_API_KEY
 from raw_scraper import scrape_raw_text
 from ai_refiner import extract_initial_award_name, verify_and_extract_org_info, extract_candidate_info
 from notion_sync import send_data_to_n8n
@@ -27,6 +28,22 @@ PRICING_OUTPUT_PER_1M_USD = 2.50
 EST_CHARS_PER_TOKEN = 4
 MODEL_TOKEN_LIMIT = 1_000_000
 MODEL_TOKEN_REFILL = "요청 단위로 리셋 (컨텍스트 윈도우 기준)"
+STATE_CACHE_FILE = ".streamlit/work_state.json"
+DATAFRAME_STATE_KEYS = {
+    "df_main_kw": ["선택", "주제 키워드"],
+    "df_sub1_kw": ["선택", "서브 키워드 1"],
+    "df_sub2_kw": ["선택", "서브 키워드 2"],
+    "df_combined": ["선택", "검색어"],
+    "df_urls": ["선택", "시상명", "URL"],
+    "df_verified_orgs": []
+}
+PERSIST_KEYS = [
+    "theme_text", "current_step",
+    "df_main_kw", "df_sub1_kw", "df_sub2_kw", "df_combined", "df_urls", "df_verified_orgs",
+    "step1_done", "step2_done", "step3_extracted", "step3_verified", "step4_done",
+    "all_candidates", "candidate_batches", "usage_stats",
+    "use_user_gemini_api_key", "user_key_validated"
+]
 
 # ==========================================
 # 3. Session State (전역 메모리) 초기화
@@ -131,6 +148,62 @@ def track_usage(input_payload=None, output_payload=None):
     st.session_state.usage_stats["output_tokens"] += out_tokens
     st.session_state.usage_stats["estimated_cost_usd"] += (in_cost + out_cost)
 
+def _serialize_state_value(key, value):
+    if key in DATAFRAME_STATE_KEYS:
+        if isinstance(value, pd.DataFrame):
+            return value.to_dict(orient="records")
+        return []
+    return value
+
+def _deserialize_state_value(key, value):
+    if key in DATAFRAME_STATE_KEYS:
+        df = pd.DataFrame(value if isinstance(value, list) else [])
+        required_cols = DATAFRAME_STATE_KEYS[key]
+        for col in required_cols:
+            if col not in df.columns:
+                df[col] = None
+        if required_cols:
+            ordered_cols = [c for c in required_cols if c in df.columns] + [c for c in df.columns if c not in required_cols]
+            df = df[ordered_cols]
+        return df
+    return value
+
+def save_work_state():
+    try:
+        payload = {}
+        for key in PERSIST_KEYS:
+            if key in st.session_state:
+                payload[key] = _serialize_state_value(key, st.session_state[key])
+        os.makedirs(os.path.dirname(STATE_CACHE_FILE), exist_ok=True)
+        with open(STATE_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.exception(f"상태 저장 실패: {e}")
+
+def load_work_state():
+    if not os.path.exists(STATE_CACHE_FILE):
+        return False
+    try:
+        with open(STATE_CACHE_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        for key in PERSIST_KEYS:
+            if key in payload:
+                st.session_state[key] = _deserialize_state_value(key, payload[key])
+        # 새로고침 복원 시 러닝 상태는 강제로 안전값으로 리셋
+        st.session_state.is_running = False
+        return True
+    except Exception as e:
+        logging.exception(f"상태 복원 실패: {e}")
+        return False
+
+def persist_and_rerun():
+    save_work_state()
+    st.rerun()
+
+if "_work_state_loaded" not in st.session_state:
+    st.session_state._work_state_loaded = True
+    load_work_state()
+
 # ==========================================
 # 4. 사이드바 (내비게이션)
 # ==========================================
@@ -192,7 +265,7 @@ if menu == "Step 0. API 설정":
         if st.button("기본 API로 돌아가기", use_container_width=True):
             st.session_state.use_user_gemini_api_key = False
             st.toast("서버 기본 API 키 모드로 전환했습니다.", icon="ℹ️")
-            st.rerun()
+            persist_and_rerun()
     with btn2:
         if st.button("입력 키 완전 삭제", use_container_width=True):
             st.session_state.user_gemini_api_key = ""
@@ -201,7 +274,7 @@ if menu == "Step 0. API 설정":
             st.session_state.last_validated_key = ""
             st.session_state.use_user_gemini_api_key = False
             st.toast("저장된 사용자 API 키를 삭제했습니다.", icon="🧹")
-            st.rerun()
+            persist_and_rerun()
 
     st.divider()
     st.subheader("현재 사용 모델 상태")
@@ -287,7 +360,7 @@ elif menu == "Step 1. 시상 주제 분석":
                         main_kw_list = ["climate change", "grassroots innovation", "environmental activism"]
                         
                     st.session_state.df_main_kw = pd.DataFrame({"선택": [True]*len(main_kw_list), "주제 키워드": main_kw_list})
-                    st.rerun()
+                    persist_and_rerun()
                     
     with col2:
         # 💡 가주님을 위한 토큰 절약용 테스트 버튼
@@ -296,15 +369,38 @@ elif menu == "Step 1. 시상 주제 분석":
             test_kw = ["Intergenerational Justice"]
             st.session_state.df_main_kw = pd.DataFrame({"선택": [True]*len(test_kw), "주제 키워드": test_kw})
             st.success("✅ 테스트 키워드가 주입되었습니다! (토큰 소모 없음)")
-            st.rerun()
+            persist_and_rerun()
 
     with col3:
         if st.session_state.step1_done:
             if st.button("초기화", use_container_width=True):
                 st.session_state.step1_done = False
-                st.rerun()
+                persist_and_rerun()
 
     if st.session_state.step1_done:
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            if st.button("주제 키워드 전체 선택", use_container_width=True):
+                st.session_state.df_main_kw["선택"] = True
+                persist_and_rerun()
+            if st.button("주제 키워드 전체 해제", use_container_width=True):
+                st.session_state.df_main_kw["선택"] = False
+                persist_and_rerun()
+        with b2:
+            if st.button("서브1 전체 선택", use_container_width=True):
+                st.session_state.df_sub1_kw["선택"] = True
+                persist_and_rerun()
+            if st.button("서브1 전체 해제", use_container_width=True):
+                st.session_state.df_sub1_kw["선택"] = False
+                persist_and_rerun()
+        with b3:
+            if st.button("서브2 전체 선택", use_container_width=True):
+                st.session_state.df_sub2_kw["선택"] = True
+                persist_and_rerun()
+            if st.button("서브2 전체 해제", use_container_width=True):
+                st.session_state.df_sub2_kw["선택"] = False
+                persist_and_rerun()
+
         st.caption("체크박스 변경 후 '선택 변경 적용' 버튼을 누르면 한 번에 반영됩니다.")
         with st.form("step1_keyword_form", clear_on_submit=False):
             c1, c2, c3 = st.columns(3)
@@ -337,6 +433,7 @@ elif menu == "Step 1. 시상 주제 분석":
             st.session_state.df_sub1_kw = edited_sub1
             st.session_state.df_sub2_kw = edited_sub2
             st.toast("키워드 선택 변경을 반영했습니다.", icon="✅")
+            save_work_state()
         
         st.button("✨ 다음 단계로 이동", type="primary", key="next1", on_click=go_to_step, args=("Step 2. 검색어 최종 조합",))
 
@@ -353,7 +450,7 @@ elif menu == "Step 2. 검색어 최종 조합":
             
             combined_list = [f"{m} {s1}" for m in main_kws for s1 in sub1_kws] + [f"{s2} {m} {s1}" for s2 in sub2_kws for m in main_kws for s1 in sub1_kws]
             st.session_state.df_combined = pd.DataFrame({"선택": [True]*len(combined_list), "검색어": combined_list})
-            st.rerun()
+            persist_and_rerun()
 
         if st.session_state.step2_done:
             st.session_state.df_combined = st.data_editor(st.session_state.df_combined, hide_index=False, use_container_width=True)
@@ -364,84 +461,123 @@ elif menu == "Step 3. URL 수집 및 교차 검증":
     st.header("Step 3. URL 수집 및 교차 검증")
     if not st.session_state.step2_done: st.warning("Step 2를 먼저 완료해 주세요.")
     else:
+        if not SERPER_API_KEY:
+            st.error("SERPER_API_KEY가 설정되지 않아 Step 3 검색을 실행할 수 없습니다. .env 또는 secrets 설정을 확인해 주세요.")
+
+        reset_col1, reset_col2 = st.columns(2)
+        with reset_col1:
+            if st.button("🔄 1차 발췌 다시 실행", use_container_width=True):
+                st.session_state.step3_extracted = False
+                st.session_state.step3_verified = False
+                st.session_state.df_urls = pd.DataFrame(columns=["선택", "시상명", "URL"])
+                st.session_state.df_verified_orgs = pd.DataFrame()
+                persist_and_rerun()
+        with reset_col2:
+            if st.button("🔄 교차 검증 다시 실행", use_container_width=True):
+                st.session_state.step3_verified = False
+                st.session_state.df_verified_orgs = pd.DataFrame()
+                persist_and_rerun()
+
         # Phase 3A: 1차 발췌
-        if st.button("1️⃣ 원문 스크랩 및 1차 발췌", disabled=st.session_state.step3_extracted):
+        if st.button("1️⃣ 원문 스크랩 및 1차 발췌", disabled=st.session_state.step3_extracted or (not SERPER_API_KEY)):
             active_queries = st.session_state.df_combined[st.session_state.df_combined["선택"]]["검색어"].tolist()
             test_queries = active_queries[:3] # 테스트용 제한
             if not test_queries:
                 st.warning("선택된 검색어가 없습니다. Step 2에서 최소 1개를 선택해 주세요.")
-                st.stop()
+            else:
+                st.session_state.step3_extracted = True
+                progress_bar = st.progress(0, text="검색 준비 중...")
+                results_list = []
+                total_search_hits = 0
+                total_scraped = 0
 
-            st.session_state.step3_extracted = True
-            progress_bar = st.progress(0, text="검색 준비 중...")
-            results_list = []
-            
-            for i, query in enumerate(test_queries):
-                progress_bar.progress((i / len(test_queries)), text=f"검색 중: {query}")
-                urls_data = search_target_urls(query) 
-                
-                for u_data in urls_data:
-                    url = u_data['link']
-                    raw_text = scrape_raw_text(url) 
-                    if raw_text:
-                        time.sleep(4) 
-                        award_name = extract_initial_award_name(
-                            raw_text,
-                            gemini_api_key=get_active_gemini_api_key()
-                        )
-                        track_usage(
-                            input_payload=raw_text[:8000],
-                            output_payload=award_name
-                        )
-                        if award_name and "관련 없음" not in award_name:
-                            results_list.append({"시상명": award_name, "URL": url})
-            
-            if results_list:
-                df = pd.DataFrame(results_list)
-                df_grouped = df.groupby('시상명', as_index=False).agg({'URL': lambda x: '\n'.join(x)})
-                df_grouped.insert(0, '선택', True)
-                st.session_state.df_urls = df_grouped
-            progress_bar.progress(1.0, text="1차 발췌 완료")
-            st.rerun()
+                for i, query in enumerate(test_queries):
+                    progress_bar.progress(((i + 1) / len(test_queries)), text=f"검색 중: {query}")
+                    try:
+                        urls_data = search_target_urls(query)
+                    except Exception as e:
+                        logging.exception(f"Step3 search_target_urls 실패: {e}")
+                        urls_data = []
+
+                    total_search_hits += len(urls_data)
+                    for u_data in urls_data:
+                        url = u_data.get("link")
+                        if not url:
+                            continue
+                        raw_text = scrape_raw_text(url)
+                        if raw_text:
+                            total_scraped += 1
+                            time.sleep(4)
+                            award_name = extract_initial_award_name(
+                                raw_text,
+                                gemini_api_key=get_active_gemini_api_key()
+                            )
+                            track_usage(
+                                input_payload=raw_text[:8000],
+                                output_payload=award_name
+                            )
+                            if award_name and "관련 없음" not in award_name:
+                                results_list.append({"시상명": award_name, "URL": url})
+
+                if results_list:
+                    df = pd.DataFrame(results_list)
+                    df_grouped = df.groupby('시상명', as_index=False).agg({'URL': lambda x: '\n'.join(x)})
+                    df_grouped.insert(0, '선택', True)
+                    st.session_state.df_urls = df_grouped
+                    st.toast(
+                        f"1차 발췌 완료: 검색 {len(test_queries)}개, URL {total_search_hits}개, 본문 추출 {total_scraped}개, 시상 후보 {len(df_grouped)}개",
+                        icon="✅"
+                    )
+                else:
+                    st.session_state.step3_extracted = False
+                    st.session_state.df_urls = pd.DataFrame(columns=["선택", "시상명", "URL"])
+                    st.warning(
+                        "1차 발췌 결과가 0건입니다. 가능한 원인: SERPER 쿼터/키 문제, 검색어 선택 부족, 사이트 본문 스크랩 실패."
+                    )
+                progress_bar.progress(1.0, text="1차 발췌 완료")
+                save_work_state()
+                persist_and_rerun()
 
         if st.session_state.step3_extracted:
+            if st.session_state.df_urls.empty:
+                st.info("현재 1차 발췌 결과가 비어 있습니다. 다시 실행 버튼으로 재시도해 주세요.")
             st.session_state.df_urls = st.data_editor(st.session_state.df_urls, use_container_width=True)
             st.divider()
             
             # Phase 3B: 딥서치 교차 검증
-            if st.button("2️⃣ 심층 교차 검증 시작", disabled=st.session_state.step3_verified, type="primary"):
+            if st.button("2️⃣ 심층 교차 검증 시작", disabled=st.session_state.step3_verified or (not SERPER_API_KEY), type="primary"):
                 targets = st.session_state.df_urls[st.session_state.df_urls["선택"]]["시상명"].tolist()
                 if not targets:
                     st.warning("교차 검증 대상이 없습니다. Step 3의 1차 발췌 결과를 확인해 주세요.")
-                    st.stop()
-
-                st.session_state.step3_verified = True
-                pb_verify = st.progress(0, text="교차 검증 준비 중...")
-                verified_data = []
-                
-                for i, award in enumerate(targets):
-                    pb_verify.progress((i / len(targets)), text=f"딥서치 중: {award}")
-                    bg_context = search_award_background(award)
-                    sample_url = st.session_state.df_urls[st.session_state.df_urls["시상명"] == award]["URL"].values[0].split('\n')[0]
-                    orig_text = scrape_raw_text(sample_url)
+                else:
+                    st.session_state.step3_verified = True
+                    pb_verify = st.progress(0, text="교차 검증 준비 중...")
+                    verified_data = []
                     
-                    time.sleep(4)
-                    org_info = verify_and_extract_org_info(
-                        orig_text,
-                        bg_context,
-                        sample_url,
-                        gemini_api_key=get_active_gemini_api_key()
-                    )
-                    track_usage(
-                        input_payload=f"{orig_text[:5000]}\n{bg_context[:5000]}",
-                        output_payload=org_info
-                    )
-                    org_info['선택'] = True
-                    verified_data.append(org_info)
-                
-                st.session_state.df_verified_orgs = pd.DataFrame(verified_data)
-                pb_verify.progress(1.0, text="교차 검증 완료")
-                st.rerun()
+                    for i, award in enumerate(targets):
+                        pb_verify.progress(((i + 1) / len(targets)), text=f"딥서치 중: {award}")
+                        bg_context = search_award_background(award)
+                        sample_url = st.session_state.df_urls[st.session_state.df_urls["시상명"] == award]["URL"].values[0].split('\n')[0]
+                        orig_text = scrape_raw_text(sample_url)
+                        
+                        time.sleep(4)
+                        org_info = verify_and_extract_org_info(
+                            orig_text,
+                            bg_context,
+                            sample_url,
+                            gemini_api_key=get_active_gemini_api_key()
+                        )
+                        track_usage(
+                            input_payload=f"{orig_text[:5000]}\n{bg_context[:5000]}",
+                            output_payload=org_info
+                        )
+                        org_info['선택'] = True
+                        verified_data.append(org_info)
+                    
+                    st.session_state.df_verified_orgs = pd.DataFrame(verified_data)
+                    pb_verify.progress(1.0, text="교차 검증 완료")
+                    save_work_state()
+                    persist_and_rerun()
 
             if st.session_state.step3_verified:
                 st.session_state.df_verified_orgs = st.data_editor(st.session_state.df_verified_orgs, use_container_width=True)
@@ -462,12 +598,12 @@ elif menu == "Step 4. 수상자 발굴 및 전송":
         with col1:
             if st.button("🚀 후보자 탐색 시작", disabled=st.session_state.is_running, type="primary"):
                 st.session_state.is_running = True
-                st.rerun()
+                persist_and_rerun()
         with col2:
             if st.session_state.is_running:
                 if st.button("🛑 중지 (Stop)"):
                     st.session_state.is_running = False
-                    st.rerun()
+                    persist_and_rerun()
 
         if st.session_state.is_running:
             all_candidates = []
@@ -539,7 +675,10 @@ elif menu == "Step 4. 수상자 발굴 및 전송":
 # --- STEP 5 ---
 elif menu == "Step 5. 시스템 디버깅":
     st.header("시스템 로그")
-    if st.button("로그 새로고침"): st.rerun()
+    if st.button("로그 새로고침"): persist_and_rerun()
     try:
         with open('system.log', 'r') as f: st.text_area("Log", f.read()[-3000:], height=400)
     except Exception: st.info("로그 파일 없음.")
+
+# 새로고침 복원을 위해 매 렌더링 끝에 상태를 저장합니다.
+save_work_state()
